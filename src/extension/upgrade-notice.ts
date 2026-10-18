@@ -22,7 +22,12 @@ export async function showUpgradeNotice(
 	const previous = versionNumber(lastSeen);
 	const current = versionNumber(version);
 	if (current === undefined || previous === current) return;
-	writeAtomicJson(statePath, { version });
+	try {
+		writeAtomicJson(statePath, { version });
+	} catch {
+		// Read-only installs cannot record the seen version. Without it the notice would repeat on every start, so skip it.
+		return;
+	}
 	if (previous === undefined || previous > current) return;
 
 	const bullets = (await fs.promises.readFile(changelogPath, "utf-8")).split(/^## /m).flatMap((section) => {
