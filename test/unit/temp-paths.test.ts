@@ -152,7 +152,7 @@ console.log(JSON.stringify({ agentDir: getAgentDir(), profilePath: path.join(pro
 		assert.equal(path.dirname(ASYNC_DIR), TEMP_ROOT_DIR);
 		assert.equal(path.dirname(CHAIN_RUNS_DIR), TEMP_ROOT_DIR);
 		assert.equal(path.dirname(TEMP_ARTIFACTS_DIR), TEMP_ROOT_DIR);
-		assert.match(path.basename(TEMP_ROOT_DIR), /^pi-subagents-/);
+		assert.equal(TEMP_ROOT_DIR, path.resolve(process.env.PI_SUBAGENTS_TEMP_ROOT!));
 		assert.equal(path.basename(RESULTS_DIR), "async-subagent-results");
 		assert.equal(path.basename(ASYNC_DIR), "async-subagent-runs");
 		assert.equal(path.basename(CHAIN_RUNS_DIR), "chain-runs");

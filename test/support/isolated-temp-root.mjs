@@ -5,7 +5,9 @@ import * as path from "node:path";
 const configuredTempRoot = process.env.PI_SUBAGENTS_TEMP_ROOT?.trim();
 const tempRoot = configuredTempRoot
 	? path.resolve(configuredTempRoot)
-	: fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-test-root-"));
+	// Short on purpose: under macOS's /var/folders/<hash>/T/, a longer name pushes nested Unix socket
+	// paths past the 104-byte limit. Shared /tmp is no alternative; its stray package.json and .pi leak into ancestor walks.
+	: fs.mkdtempSync(path.join(os.tmpdir(), "pst-"));
 fs.mkdirSync(tempRoot, { recursive: true });
 if (process.platform === "darwin") fs.closeSync(fs.openSync(path.join(tempRoot, ".metadata_never_index"), "a"));
 process.env.PI_SUBAGENTS_TEMP_ROOT = tempRoot;
