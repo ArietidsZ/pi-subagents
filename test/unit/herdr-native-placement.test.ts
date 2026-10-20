@@ -147,6 +147,23 @@ describe("pane-native Herdr placement public contracts", { skip: process.platfor
 		finally { socket?.destroy(); handlers.get("session_shutdown")?.(); old.mode === undefined ? delete process.env[HERDR_PI_MODE_ENV] : process.env[HERDR_PI_MODE_ENV] = old.mode; old.run === undefined ? delete process.env[HERDR_PI_RUN_ENV] : process.env[HERDR_PI_RUN_ENV] = old.run; old.dir === undefined ? delete process.env[HERDR_PI_RUNTIME_DIR_ENV] : process.env[HERDR_PI_RUNTIME_DIR_ENV] = old.dir; fs.rmSync(dir, { recursive: true, force: true }); }
 	});
 
+	it("leaves the remote operator's APPEND_SYSTEM.md out of the child's prompt", { skip: process.platform === "win32" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-herdr-append-")); const old = { mode: process.env[HERDR_PI_MODE_ENV], run: process.env[HERDR_PI_RUN_ENV], dir: process.env[HERDR_PI_RUNTIME_DIR_ENV] }; process.env[HERDR_PI_MODE_ENV] = "1"; process.env[HERDR_PI_RUN_ENV] = "run_append01"; process.env[HERDR_PI_RUNTIME_DIR_ENV] = dir; const handlers = new Map<string, Function>(); let socket: net.Socket | undefined;
+		const pi = { registerTool() {}, registerCommand() {}, on(name: string, handler: Function) { handlers.set(name, handler); }, setActiveTools() {} };
+		try {
+			registerHerdrPiBridge(pi as never); handlers.get("session_start")?.({}, { sessionManager: { getSessionId: () => "native", getSessionFile: () => "/remote/session" }, getActiveTools: () => ["read"], model: { provider: "p", id: "m" }, isIdle: () => true, hasPendingMessages: () => false });
+			socket = net.createConnection(path.join(dir, "bridge.sock")); const decoder = new HerdrPiFrameDecoder(); const frames: any[] = []; socket.on("data", (chunk) => frames.push(...decoder.push(chunk))); await new Promise<void>((resolve) => socket!.once("connect", resolve));
+			socket.write(encodeHerdrPiFrame({ protocol: 1, runId: "run_append01", type: "configure", requestId: "cfg", resources: { agent: "worker", toolCeiling: ["read"] } })); await new Promise((resolve) => setTimeout(resolve, 30)); assert.ok(frames.some((frame) => frame.type === "configured"));
+			// As Pi's runner builds it: systemPrompt renders from the mutable systemPromptOptions.
+			const systemPromptOptions = { appendSystemPrompt: "REMOTE_OPERATOR_APPEND" };
+			const event = { systemPromptOptions, get systemPrompt() { return `base${systemPromptOptions.appendSystemPrompt ? `\n<addendum>${systemPromptOptions.appendSystemPrompt}</addendum>` : ""}`; } };
+			const result = handlers.get("before_agent_start")?.(event, {});
+			assert.equal(systemPromptOptions.appendSystemPrompt, "");
+			assert.doesNotMatch(result.systemPrompt, /REMOTE_OPERATOR_APPEND/u);
+			assert.match(result.systemPrompt, /<active_agent name="worker"\/>/u);
+		} finally { socket?.destroy(); handlers.get("session_shutdown")?.(); old.mode === undefined ? delete process.env[HERDR_PI_MODE_ENV] : process.env[HERDR_PI_MODE_ENV] = old.mode; old.run === undefined ? delete process.env[HERDR_PI_RUN_ENV] : process.env[HERDR_PI_RUN_ENV] = old.run; old.dir === undefined ? delete process.env[HERDR_PI_RUNTIME_DIR_ENV] : process.env[HERDR_PI_RUNTIME_DIR_ENV] = old.dir; fs.rmSync(dir, { recursive: true, force: true }); }
+	});
+
 	it("frames correlated bridge data and fails closed on malformed, partial, or oversized evidence", () => {
 		const decoder = new HerdrPiFrameDecoder(); const encoded = encodeHerdrPiFrame({ protocol: 1, runId: "run_12345678", type: "settled", requestId: "q1", idle: true, pending: false });
 		assert.deepEqual(decoder.push(encoded)[0], { protocol: 1, runId: "run_12345678", type: "settled", requestId: "q1", idle: true, pending: false });
