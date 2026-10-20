@@ -68,6 +68,7 @@ import { registerWorkflowResource } from "../../src/api/workflow-resources.ts";
 import { registerSubagentCapabilityCeiling } from "../../src/api/capability-ceiling.ts";
 import { appendWorkflowChildJournal, runtimeReplacedAbortReason, workflowChildFingerprint } from "../../src/workflows/workflow-reuse.ts";
 import { updateTerminalRunIndex } from "../../src/runs/background/terminal-run-index.ts";
+import { getActiveAsyncCapacitySnapshot } from "../../src/runs/background/active-async-capacity.ts";
 
 function writeRetainedEchoRun(runId: string, options: { outputPath: string; state: "complete" | "failed"; steps: number }) {
 	const asyncDir = path.join(DIRS.async, runId);
@@ -2006,9 +2007,9 @@ Answer only from the supplied synthetic text.
 		const terminalStates = ["complete", "failed", "partial", "paused", "stopped", "rejected"];
 		// SAFETY: the executor and runner write these status.json files from AsyncStatus values.
 		const readStatusFile = (runId: string) => JSON.parse(fs.readFileSync(path.join(DIRS.async, runId, "status.json"), "utf-8")) as AsyncStatus;
-		const setup = () => {
+		const setup = (config: Record<string, unknown> = {}) => {
 			const workflowControllers = new Map<string, AbortController>();
-			const executor = makeExecutor([makeAgent("echo"), makeAgent("bg", { defaultAsync: true })], {}, false, undefined, true, new Map(), workflowControllers, undefined, undefined, undefined, undefined, () => {});
+			const executor = makeExecutor([makeAgent("echo"), makeAgent("bg", { defaultAsync: true })], config, false, undefined, true, new Map(), workflowControllers, undefined, undefined, undefined, undefined, () => {});
 			const start = (params: Record<string, unknown>, sessionId?: string) => {
 				const ctx = makeMinimalCtx(tempDir);
 				if (sessionId) ctx.sessionManager.getSessionId = () => sessionId;
@@ -2076,9 +2077,9 @@ Answer only from the supplied synthetic text.
 			assert.equal(mockPi.callCount(), callsAfterStop + 5, "only stage2 launches");
 			assert.equal(relaunched.workflow?.reusedFrom, firstId);
 			assert.deepEqual(relaunched.workflow?.value, { first: "stage one done", second: "stage two done", reused: true });
-			assert.deepEqual(relaunched.steps?.map(({ workflowKey, runId, reused }) => ({ workflowKey, runId: workflowKey === "stage1" ? runId : undefined, reused })), [
-				{ workflowKey: "stage1", runId: stage1RunId, reused: true },
-				{ workflowKey: "stage2", runId: undefined, reused: undefined },
+			assert.deepEqual(relaunched.steps?.map(({ workflowKey, runId, reused, async }) => ({ workflowKey, runId: workflowKey === "stage1" ? runId : undefined, reused, async })), [
+				{ workflowKey: "stage1", runId: stage1RunId, reused: true, async: false },
+				{ workflowKey: "stage2", runId: undefined, reused: undefined, async: false },
 			]);
 			assert.ok(relaunched.workflow?.trace.some((entry) => entry.key === "stage1" && entry.state === "completed" && entry.reused === true));
 		});
@@ -2147,10 +2148,10 @@ Answer only from the supplied synthetic text.
 			assert.equal(mockPi.callCount(), callsBefore + 3, "only stage3 launches after the relaunch");
 			assert.equal(relaunched.workflow?.reusedFrom, firstId);
 			assert.deepEqual(relaunched.workflow?.value, { first: "stage one done", second: "stage two done", secondReused: true, third: "stage three done" });
-			assert.deepEqual(relaunched.steps?.map(({ workflowKey, reused }) => ({ workflowKey, reused })), [
-				{ workflowKey: "stage1", reused: true },
-				{ workflowKey: "stage2", reused: true },
-				{ workflowKey: "stage3", reused: undefined },
+			assert.deepEqual(relaunched.steps?.map(({ workflowKey, reused, async }) => ({ workflowKey, reused, async })), [
+				{ workflowKey: "stage1", reused: true, async: false },
+				{ workflowKey: "stage2", reused: true, async: true },
+				{ workflowKey: "stage3", reused: undefined, async: false },
 			]);
 			assert.equal(relaunched.steps?.[1]?.runId, stage2RunId);
 			assert.deepEqual(relaunched.steps?.map(({ workflowKey, tokens, turnCount }) => ({ workflowKey, total: tokens?.total, turnCount })), [
@@ -2159,6 +2160,47 @@ Answer only from the supplied synthetic text.
 				{ workflowKey: "stage3", total: 150, turnCount: 1 },
 			]);
 			assert.equal(fs.existsSync(path.join(DIRS.async, stage2RunId, "workflow-result.json")), false, "the relaunch consumes the awaited result like the normal path");
+		});
+
+		it("holds a relaunch's capacity slot while its re-attached child runs and releases it once the child ends", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+			const nonce = `reattach-capacity-${Date.now()}`;
+			const sessionId = `session-${nonce}`;
+			const release = path.join(tempDir, `${nonce}.release`);
+			const script = `await runs.run("stage1", { agent: "echo", task: "Stage one ${nonce}" }); await runs.run("stage2", { agent: "bg", task: "Stage two ${nonce}" });`;
+			const args = { nonce };
+			const { launch, stopWhenStage2Starts } = setup({ maxActiveAsyncRunsPerSession: 4 });
+			mockPi.onCall({ matchArgIncludes: `Stage one ${nonce}`, output: "stage one done" });
+			mockPi.onCall({ matchArgIncludes: `Stage two ${nonce}`, waitForPath: release, output: "stage two done" });
+			const firstId = await launch({ workflowScript: script, args }, sessionId);
+			const stage2RunId = (await stopWhenStage2Starts(firstId, runtimeReplacedAbortReason(), awaitedStage2Ready)).steps?.find((step) => step.workflowKey === "stage2")?.runId;
+			assert.ok(stage2RunId);
+
+			const relaunchId = await launch({ workflowScript: script, args }, sessionId);
+			const journalPath = path.join(DIRS.async, relaunchId, "workflow-children.jsonl");
+			const relaunched = await stopWhenStage2Starts(relaunchId, runtimeReplacedAbortReason(), () => fs.existsSync(journalPath) && fs.readFileSync(journalPath, "utf-8").includes(`"runId":"${stage2RunId}"`));
+			assert.deepEqual(relaunched.steps?.map(({ workflowKey, status, async }) => ({ workflowKey, status, async })), [
+				{ workflowKey: "stage1", status: "completed", async: false },
+				{ workflowKey: "stage2", status: "running", async: true },
+			]);
+			assert.equal(relaunched.steps?.[1]?.runId, stage2RunId);
+			assert.equal(getActiveAsyncCapacitySnapshot(sessionId, 4).used, 2, "both stopped workflows wait for the still-running child");
+
+			fs.writeFileSync(release, "go");
+			await waitForAsyncState(stage2RunId, (status) => status.state === "complete", 30_000);
+			for (const deadline = Date.now() + 10_000; getActiveAsyncCapacitySnapshot(sessionId, 4).used > 0 && Date.now() < deadline;) await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.deepEqual(getActiveAsyncCapacitySnapshot(sessionId, 4), { used: 0, limit: 4 });
+		});
+
+		it("marks a child stopped before it launched as not async", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+			const nonce = `queued-stop-${Date.now()}`;
+			const { launch, stopWhenStage2Starts } = setup({ globalConcurrencyLimit: 1 });
+			mockPi.onCall({ matchArgIncludes: `Stage one ${nonce}`, hangUntilAbort: true });
+			const runId = await launch({ workflowScript: `await Promise.all([runs.run("stage1", { agent: "echo", task: "Stage one ${nonce}" }), runs.run("stage2", { agent: "echo", task: "Stage two ${nonce}" })]);` });
+			const stopped = await stopWhenStage2Starts(runId, new Error("Stopped by user."), (status) => status.steps?.find((step) => step.workflowKey === "stage1")?.async === false);
+			assert.deepEqual(stopped.steps?.map(({ workflowKey, status, async }) => ({ workflowKey, status, async })), [
+				{ workflowKey: "stage1", status: "stopped", async: false },
+				{ workflowKey: "stage2", status: "stopped", async: false },
+			]);
 		});
 
 		it("reuses another session's runtime-replaced run only when options.reuseFrom names it", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
