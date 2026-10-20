@@ -326,7 +326,9 @@ export function createFakeChildSessions(queueDir: () => string): FakeChildSessio
 			};
 			const waitForReleasePath = async (releasePath: string | undefined): Promise<void> => {
 				if (typeof releasePath !== "string") return;
-				const deadline = Date.now() + 30_000;
+				// Release is a test-controlled event and abort short-circuits below; this bound only prevents an endless wait,
+				// so it must stay clear of pre-release phases that spawn several cold `node --experimental-strip-types` children.
+				const deadline = Date.now() + 120_000;
 				while (!fs.existsSync(releasePath)) {
 					if (record.aborted) return;
 					if (Date.now() >= deadline) throw new Error(`Timed out waiting for mock release path: ${releasePath}`);

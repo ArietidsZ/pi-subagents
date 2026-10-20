@@ -35,7 +35,8 @@ test("native preload leaves the SDK extension loader's require.resolve intact", 
 			timeout: 10_000,
 		});
 		assert.equal(child.status, 0, child.stderr);
-		assert.equal(child.stdout.trim(), fs.realpathSync(target));
+		// Node 24 returns the alias path verbatim and Node 25 the realpath; on macOS /var is a symlink to /private/var.
+		assert.equal(fs.realpathSync(child.stdout.trim()), fs.realpathSync(target));
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}

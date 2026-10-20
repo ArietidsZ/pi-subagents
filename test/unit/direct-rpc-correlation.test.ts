@@ -126,7 +126,7 @@ describe("direct RPC correlation", () => {
 			await waitForAsyncResultFile(id);
 			await waitFor(() => status(id).processTerminal?.state === "observed");
 		}
-		assert.equal(status(id).state, "complete");
+		assert.equal(status(id).state, "complete", status(id).error ?? "");
 		assert.equal(fs.readFileSync(sideEffect, "utf8"), "done");
 		const sideEffectTime = fs.statSync(sideEffect).mtimeMs;
 		assertIdentity(id, toolCallId);
