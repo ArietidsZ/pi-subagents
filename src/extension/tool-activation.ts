@@ -70,27 +70,49 @@ function applyRecordedSelection(pi: ExtensionAPI, ctx: ExtensionContext, mode: "
 	if (!available.some((tool) => tool.name === LOADER_NAME)) return true;
 	// SAFETY: The running Pi session manager exposes buildSessionContext, but its read-only extension type omits it.
 	const messages = (ctx.sessionManager as typeof ctx.sessionManager & { buildSessionContext(): { messages: ToolSelectionMessage[] } }).buildSessionContext().messages;
-	if (hasNativeToolSelection(messages)) {
+	// A compaction without a checkpoint leaves its summary first, with no system message before it: the
+	// declarations from before it are lost, even when no tool selection was recorded after it.
+	const lost = messages.find((message) => message.role === "system" || message.role === "compactionSummary")?.role === "compactionSummary";
+	if (lost || hasNativeToolSelection(messages)) {
 		// Replayed here because a package-local pi-ai may be older than the running Pi.
 		const recorded = new Set<string>();
 		const unloadedNames = new Set<string>();
 		const declaredSentinels = new Set<string>();
+		// Tools the surviving transcript says something about: an addition, or a removal that is not an unload.
+		const evidenced = new Set<string>();
 		for (const message of messages) {
 			if (message.role !== "system") continue;
 			// Pi records an extension unload (update, reload) as a removal of each of its active tools, with no cause.
-			// While this extension is loaded, the loader, subagent or bg_wait stays declared, so a removal that leaves
-			// none of them is that unload, not a choice, and the selection from before it stands.
+			// While this extension is loaded, the loader, subagent or bg_wait stays declared, so a removal of declared
+			// sentinels that leaves none of them is that unload, not a choice, and the selection from before it stands.
+			// Pi removes only declared tools, so a removal naming an undeclared sentinel is a choice.
+			const removedSentinels = (message.toolsRemoved ?? []).filter((tool) => UNLOAD_SENTINELS.has(tool.name));
+			const allDeclared = removedSentinels.every((tool) => declaredSentinels.has(tool.name));
 			for (const tool of message.toolsRemoved ?? []) declaredSentinels.delete(tool.name);
 			for (const tool of message.toolsAdded ?? []) if (UNLOAD_SENTINELS.has(tool.name)) declaredSentinels.add(tool.name);
-			const unloaded = declaredSentinels.size === 0 && message.toolsRemoved?.some((tool) => UNLOAD_SENTINELS.has(tool.name));
+			const unloaded = removedSentinels.length > 0 && allDeclared && declaredSentinels.size === 0;
 			for (const tool of message.toolsRemoved ?? []) {
 				if (unloaded) unloadedNames.add(tool.name);
-				else recorded.delete(tool.name);
+				else {
+					recorded.delete(tool.name);
+					evidenced.add(tool.name);
+				}
 			}
-			for (const tool of message.toolsAdded ?? []) recorded.add(tool.name);
+			for (const tool of message.toolsAdded ?? []) {
+				recorded.add(tool.name);
+				evidenced.add(tool.name);
+			}
 		}
-		// "auto" never adds the loader to a transcript that did not declare it: that is itself a tool change.
-		const loaderSelected = mode === "dynamic" || recorded.has(LOADER_NAME);
+		// The loader and subagent record one activation state (cold, warm, eager); bg_wait and subagent_supervisor
+		// are declared on their own. Only when the activation state itself is lost is it decided as for a new
+		// session. The live tools are no evidence: Pi restores them from this transcript, or activates every
+		// extension tool on /reload.
+		const fresh = lost && !evidenced.has(LOADER_NAME) && !evidenced.has(SUBAGENT_NAME);
+		const startsEager = fresh && mode === "auto" && !addsToolsWithoutCheckpoint(ctx.model);
+		// Otherwise "auto" never adds the loader to a transcript that did not declare it: that is itself a tool change.
+		const loaderSelected = mode === "dynamic" || recorded.has(LOADER_NAME) || (fresh && !startsEager);
+		// An eager re-decision re-adds bg_wait only when the transcript is silent about it: a post-compaction
+		// removal that is not an unload is an operator choice, and a surviving declaration is recorded.has.
 		// A new process restores the transcript's tools, where the unload left this extension's tools inactive; only
 		// /reload re-adds them. Restoring them keeps a sentinel declared, so a later unload is recognised too. Tools of
 		// other extensions, and tools excluded for this process (not registered, so not in getAllTools), stay as they are.
@@ -98,7 +120,7 @@ function applyRecordedSelection(pi: ExtensionAPI, ctx: ExtensionContext, mode: "
 		const restore = source === undefined ? [] : available
 			.filter((tool) => unloadedNames.has(tool.name) && recorded.has(tool.name) && tool.sourceInfo.path === source)
 			.map((tool) => tool.name);
-		setSelection(pi, recorded.has(SUBAGENT_NAME), loaderSelected, recorded.has(WAIT_NAME), replyOwed ? [...restore, PARENT_SUPERVISOR_NAME] : restore, replyOwed || recorded.has(PARENT_SUPERVISOR_NAME));
+		setSelection(pi, recorded.has(SUBAGENT_NAME) || startsEager, loaderSelected, recorded.has(WAIT_NAME) || (!evidenced.has(WAIT_NAME) && startsEager), replyOwed ? [...restore, PARENT_SUPERVISOR_NAME] : restore, replyOwed || recorded.has(PARENT_SUPERVISOR_NAME));
 		return loaderSelected;
 	}
 	// "auto" goes eager only for an empty session; any history keeps the tools it already sent.

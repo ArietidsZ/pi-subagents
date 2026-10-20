@@ -98,7 +98,7 @@ Controls how a new parent session offers the `subagent` tool. The default is `"a
 - `"dynamic"`: every new session starts with the loader, whatever the model. This was the behavior before `toolActivation` existed.
 - `"eager"`: the loader is not registered, so `subagent` is active from the first request, as with `--exclude-tools subagents_enable`. A resumed session that recorded the loader changes its tool list once on the next request.
 
-The choice is made at session start or tree navigation, and only for a session with no messages. Resumed sessions keep the tools they recorded, and switching models mid-session does not change them. `"auto"` avoids only the loader's cache miss; other tool-list or provider changes can still miss the cache. An active `subagent` sends its full schema on every request. An invalid value is a config error, not a fallback to the default. Restart Pi after changing it.
+The choice is made at session start or tree navigation, and only for a session with no messages. If a compaction that kept no tool checkpoint dropped the record of this choice, the session is decided again as a new session would be; tool selections recorded after that compaction (for `bg_wait` or another extension's tools) are not evidence that the choice survived. Resumed sessions keep the tools they recorded, and switching models mid-session does not change them. `"auto"` avoids only the loader's cache miss; other tool-list or provider changes can still miss the cache. An active `subagent` sends its full schema on every request. An invalid value is a config error, not a fallback to the default. Restart Pi after changing it.
 
 ## `toolDescriptionMode`
 

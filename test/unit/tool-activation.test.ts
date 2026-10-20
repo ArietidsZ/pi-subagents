@@ -130,6 +130,8 @@ describe("subagent tool activation", () => {
 		const tool = { name: "subagent", description: "historical", parameters: { type: "object" } };
 		const history = [{ role: "system", content: "", toolsAdded: [], timestamp: 1 }];
 		const cold = createRuntime(history, [], [], DYNAMIC);
+		// Real Pi restores the session's tool state on start; a cold transcript restores loader only.
+		cold.select(["read", "subagents_enable"]);
 		await cold.emit("session_start", { type: "session_start", reason: "reload" });
 		assert.equal(cold.active().includes("subagent"), false);
 		await cold.emit("session_tree", { type: "session_tree", newLeafId: null, oldLeafId: null });
@@ -221,6 +223,39 @@ async function startAgent(runtime: ReturnType<typeof createRuntime>): Promise<st
 	};
 	await runtime.emit("before_agent_start", event);
 	return event.systemPromptOptions.selectedTools;
+}
+
+type Runtime = ReturnType<typeof createRuntime>;
+// A compaction that kept no tool checkpoint, placed as Pi's buildSessionContext places it: first, with no system message before it.
+const compacted = { role: "compactionSummary", summary: "", tokensBefore: 0, timestamp: 0 };
+const other = declared(["read", "other_extension_tool"]);
+const OWNED = ["subagents_enable", "subagent", "contact_supervisor", "bg_wait"];
+const RESUME = { type: "session_start", reason: "resume" };
+const RELOAD = { type: "session_start", reason: "reload" };
+const TREE = { type: "session_tree", newLeafId: null, oldLeafId: null };
+// The host's live set before a replay: /reload activates every extension tool; resume and session_tree restore the transcript's tools.
+const allOn = (runtime: Runtime) => runtime.select(["read", ...runtime.tools.keys()]);
+const replays = (current: string[]): Array<[string, (runtime: Runtime) => void, { type: string }]> => [
+	["resume", (runtime) => runtime.select(["read", ...current]), RESUME],
+	["reload", allOn, RELOAD],
+	["tree", (runtime) => runtime.select(["read", ...current]), TREE],
+];
+
+// Asserts what the replay applied, then that before_agent_start declares the same.
+async function assertOwned(runtime: Runtime, label: string, expected: Record<string, boolean>): Promise<void> {
+	const active = runtime.active();
+	for (const [name, on] of Object.entries(expected)) assert.equal(active.includes(name), on, `${label}: active ${name}`);
+	const selectedTools = await startAgent(runtime);
+	for (const [name, on] of Object.entries(expected)) assert.equal(selectedTools.includes(name), on, `${label}: ${name}`);
+}
+
+async function replayAll(messages: any[], options: RuntimeOptions, current: string[], label: string, expected: Record<string, boolean>): Promise<void> {
+	const runtime = createRuntime(messages, [], [], options);
+	for (const [event, prepare, payload] of replays(current)) {
+		prepare(runtime);
+		await runtime.emit(payload.type, payload);
+		await assertOwned(runtime, `${label}, ${(options.model as { api?: string } | undefined)?.api}, ${event}`, expected);
+	}
 }
 
 describe("toolActivation modes", () => {
@@ -358,6 +393,167 @@ describe("toolActivation modes", () => {
 		const unaffected = await restart([declared(["read", "subagent", "contact_supervisor"])], [], ["read", "subagent", "contact_supervisor"]);
 		assert.equal(unaffected.active().includes("bg_wait"), false, "unaffected: bg_wait");
 		assert.ok(unaffected.active().includes("subagent"), "unaffected: subagent");
+	});
+
+	it("decides a session whose activation record a compaction lost as a new session, and honours a later removal", async () => {
+		// A compaction without a checkpoint drops the session-start declaration while other extensions'
+		// tool-selection messages survive. The activation state is then decided by the new-session rule:
+		// eager on a model that cannot add tools (no loader), cold on one that can. A removal recorded after
+		// the compaction boundary is honoured.
+		const surviving = declared(["read", "other_extension_tool"]);
+		const eagerAuto = ["read", "subagent", "contact_supervisor", "bg_wait", "subagent_supervisor"];
+
+		const resumed = createRuntime([compacted, surviving], [], [], { model: INCOMPATIBLE });
+		resumed.select(eagerAuto);
+		await resumed.emit("session_start", { type: "session_start", reason: "resume" });
+		for (const name of eagerAuto) assert.ok(resumed.active().includes(name), `resume: ${name}`);
+		assert.equal((await startAgent(resumed)).includes("subagents_enable"), false, "resume: no loader added");
+
+		const coldAuto = createRuntime([compacted, surviving], [], [], { model: COMPATIBLE });
+		coldAuto.select(["read", "subagents_enable"]);
+		await coldAuto.emit("session_start", { type: "session_start", reason: "resume" });
+		assert.equal(coldAuto.active().includes("subagent"), false, "cold: stays cold");
+		assert.equal(coldAuto.active().includes("bg_wait"), false, "cold: no bg_wait");
+		assert.ok((await startAgent(coldAuto)).includes("subagents_enable"), "cold: loader kept");
+
+		// Synthetic: Pi cannot remove a tool that was never declared. It pins that such a removal is a choice, not an unload.
+		const removedAfterCompaction = createRuntime([compacted, surviving, declared([], ["subagent", "contact_supervisor"])], [], [], { model: INCOMPATIBLE });
+		removedAfterCompaction.select(["read"]);
+		await removedAfterCompaction.emit("session_start", { type: "session_start", reason: "resume" });
+		assert.equal(removedAfterCompaction.active().includes("subagent"), false, "removal echo honored");
+
+		const dynamicSession = createRuntime([compacted, surviving], [], [], { ...DYNAMIC, model: INCOMPATIBLE });
+		dynamicSession.select(["read", "subagents_enable"]);
+		await dynamicSession.emit("session_start", { type: "session_start", reason: "resume" });
+		assert.equal(dynamicSession.active().includes("subagent"), false, "dynamic: stays off");
+		assert.ok((await startAgent(dynamicSession)).includes("subagents_enable"), "dynamic: loader kept");
+	});
+
+	it("re-decides the activation state a compaction lost, whatever other tools survive", async () => {
+		// The loader's declaration is compacted away, then a background-work provider declares bg_wait.
+		const messages = [compacted, other, declared(["bg_wait"])];
+		const dispose = registerBackgroundWorkProvider({ name: "tool-activation-lost-loader", listActiveWork: () => [] });
+		try {
+			await replayAll(messages, { model: COMPATIBLE }, ["other_extension_tool", "bg_wait"], "lost cold",
+				{ subagents_enable: true, subagent: false, contact_supervisor: false, bg_wait: true, subagent_supervisor: false });
+			await replayAll(messages, { model: INCOMPATIBLE }, ["other_extension_tool", "bg_wait"], "lost eager",
+				{ subagents_enable: false, subagent: true, contact_supervisor: true, bg_wait: true, subagent_supervisor: true });
+		} finally {
+			dispose();
+		}
+	});
+
+	it("treats a compaction that kept a tool checkpoint as an intact transcript", async () => {
+		// guard: the checkpoint system message precedes the summary and re-declares the active tools.
+		const messages = [declared(["read", "other_extension_tool"]), compacted, declared(["bg_wait"])];
+		for (const caseModel of [COMPATIBLE, INCOMPATIBLE]) {
+			await replayAll(messages, { model: caseModel }, ["other_extension_tool", "bg_wait"], "checkpointed",
+				{ subagents_enable: false, subagent: false, contact_supervisor: false, bg_wait: true });
+		}
+		await replayAll([declared(["read", "subagents_enable"]), compacted, declared(["bg_wait"])], { model: COMPATIBLE }, ["subagents_enable", "bg_wait"], "checkpointed cold",
+			{ subagents_enable: true, subagent: false, bg_wait: true });
+	});
+
+	it("keeps the loader of a lost activation state across an unload recorded after the compaction", async () => {
+		// Both the old and the new unload rule call this an unload; it pins the loader and the bg_wait restore.
+		const runtime = createRuntime([compacted, other, declared(["bg_wait", "subagent_supervisor"]), declared([], ["bg_wait", "subagent_supervisor"])], [], [], { model: COMPATIBLE });
+		runtime.select(["read"]);
+		await runtime.emit(RESUME.type, RESUME);
+		await assertOwned(runtime, "lost unload", { subagents_enable: true, subagent: false, bg_wait: true });
+	});
+
+	it("keeps a surviving activation record after a compaction, whatever the model", async () => {
+		// guard: the loader and subagent are one activation state; either surviving declares it.
+		await replayAll([compacted, declared(["read", "subagents_enable"])], { model: INCOMPATIBLE }, ["subagents_enable"], "lost, loader survives",
+			{ subagents_enable: true, subagent: false, contact_supervisor: false, bg_wait: false });
+		await replayAll([compacted, declared(["read", "subagent", "contact_supervisor", "bg_wait"])], { model: COMPATIBLE }, ["subagent", "contact_supervisor", "bg_wait"], "lost, subagent survives",
+			{ subagents_enable: false, subagent: true, bg_wait: true });
+		const enabled = ["subagent", "contact_supervisor", "bg_wait", "subagent_supervisor"];
+		const messages = [compacted, other, declared(enabled)];
+		for (const caseModel of [COMPATIBLE, INCOMPATIBLE]) {
+			await replayAll(messages, { model: caseModel }, ["other_extension_tool", ...enabled], "lost, enable survives",
+				{ subagents_enable: false, subagent: true, contact_supervisor: true, bg_wait: true });
+		}
+		await replayAll(messages, { ...DYNAMIC, model: COMPATIBLE }, ["other_extension_tool", ...enabled], "dynamic, enable survives",
+			{ subagents_enable: true, subagent: true });
+	});
+
+	it("replays a transcript that never declared this extension's tools without adding them", async () => {
+		// The harness starts with every registered tool active, as /reload does.
+		const auto = createRuntime([other], [], [], { model: COMPATIBLE });
+		await auto.emit(RELOAD.type, RELOAD);
+		await assertOwned(auto, "intact, never declared", { subagents_enable: false, subagent: false, bg_wait: false });
+
+		const dynamic = createRuntime([other], [], [], { ...DYNAMIC, model: INCOMPATIBLE });
+		await dynamic.emit(RELOAD.type, RELOAD);
+		await assertOwned(dynamic, "dynamic, never declared", { subagents_enable: true, subagent: false });
+	});
+
+	it("tells an unload from a deliberate removal after a compaction", async () => {
+		const removed = createRuntime([compacted, declared(["bg_wait", "subagent", "contact_supervisor"]), declared([], ["subagent", "contact_supervisor"])], [], [], { model: INCOMPATIBLE });
+		await removed.emit(RELOAD.type, RELOAD);
+		await assertOwned(removed, "deliberate removal", { subagents_enable: false, subagent: false, bg_wait: true });
+
+		const redefined = createRuntime([compacted, other, declared(["subagent", "contact_supervisor", "bg_wait"]), declared(["bg_wait"], ["bg_wait"])], [], [], { model: COMPATIBLE });
+		await redefined.emit(RELOAD.type, RELOAD);
+		await assertOwned(redefined, "bg_wait redefined", { subagents_enable: false, subagent: true, bg_wait: true });
+	});
+
+	it("always offers the loader in dynamic after a compaction", async () => {
+		await replayAll([compacted, other, declared(["bg_wait"])], { ...DYNAMIC, model: INCOMPATIBLE }, ["other_extension_tool", "bg_wait"], "dynamic lost",
+			{ subagents_enable: true, subagent: false });
+		await replayAll([compacted, declared(["read", "subagent", "contact_supervisor"])], { ...DYNAMIC, model: COMPATIBLE }, ["subagent", "contact_supervisor"], "dynamic lost warm",
+			{ subagents_enable: true, subagent: true });
+	});
+
+	it("leaves the channel's subagent_supervisor off in a lost cold session without a pending request", async () => {
+		const runtime = createRuntime([compacted, other, declared(["bg_wait"])], [], [], { model: COMPATIBLE });
+		await runtime.emit(RESUME.type, RESUME);
+		await assertOwned(runtime, "lost cold", { subagents_enable: true, subagent_supervisor: false });
+	});
+
+	it("decides a compacted session's tools from its transcript alone", async () => {
+		const unit = ["subagent", "contact_supervisor", "bg_wait", "subagent_supervisor"];
+		const scenarios: Array<[string, any[], RuntimeOptions, string[]]> = [
+			["lost cold", [compacted, other, declared(["bg_wait"])], { model: COMPATIBLE }, ["other_extension_tool", "bg_wait"]],
+			["lost eager", [compacted, other, declared(["bg_wait"])], { model: INCOMPATIBLE }, ["other_extension_tool", "bg_wait"]],
+			["checkpointed", [other, compacted, declared(["bg_wait"])], { model: COMPATIBLE }, ["other_extension_tool", "bg_wait"]],
+			["checkpointed", [other, compacted, declared(["bg_wait"])], { model: INCOMPATIBLE }, ["other_extension_tool", "bg_wait"]],
+			["lost unload", [compacted, other, declared(["bg_wait", "subagent_supervisor"]), declared([], ["bg_wait", "subagent_supervisor"])], { model: COMPATIBLE }, []],
+			["lost, loader survives", [compacted, declared(["read", "subagents_enable"])], { model: INCOMPATIBLE }, ["subagents_enable"]],
+			["lost, subagent survives", [compacted, declared(["read", "subagent", "contact_supervisor", "bg_wait"])], { model: COMPATIBLE }, ["subagent", "contact_supervisor", "bg_wait"]],
+			["lost, enable survives", [compacted, other, declared(unit)], { model: INCOMPATIBLE }, ["other_extension_tool", ...unit]],
+			["lost, nothing survives", [compacted, other], { model: INCOMPATIBLE }, []],
+			["lost, nothing survives", [compacted, other], { model: COMPATIBLE }, []],
+			["lost, no tool selection survives", [compacted, { role: "user", content: "next", timestamp: 0 }], { model: INCOMPATIBLE }, []],
+			["lost, no tool selection survives", [compacted, { role: "user", content: "next", timestamp: 0 }], { model: COMPATIBLE }, []],
+			["deliberate removal", [compacted, declared(["bg_wait", "subagent", "contact_supervisor"]), declared([], ["subagent", "contact_supervisor"])], { model: INCOMPATIBLE }, ["bg_wait"]],
+			["dynamic lost", [compacted, other, declared(["bg_wait"])], { ...DYNAMIC, model: INCOMPATIBLE }, ["other_extension_tool", "bg_wait"]],
+			["intact, never declared", [other], { model: COMPATIBLE }, ["other_extension_tool"]],
+		];
+		const owned = (names: string[]) => {
+			// subagent_supervisor follows the live set while subagent is off, so it is compared only with subagent on.
+			const compared = names.includes("subagent") ? [...OWNED, "subagent_supervisor"] : OWNED;
+			return compared.filter((name) => names.includes(name)).sort();
+		};
+		for (const [label, messages, options, current] of scenarios) {
+			const message = `${label}, ${(options.model as { api: string }).api}`;
+			const reloaded = createRuntime(messages, [], [], options);
+			await reloaded.emit(RELOAD.type, RELOAD);
+			const reloadedActive = owned(reloaded.active());
+			const reloadedSelected = owned(await startAgent(reloaded));
+
+			const resumed = createRuntime(messages, [], [], options);
+			resumed.select(["read", ...current]);
+			await resumed.emit(RESUME.type, RESUME);
+			assert.deepEqual(owned(resumed.active()), reloadedActive, `${message}: active`);
+			assert.deepEqual(owned(await startAgent(resumed)), reloadedSelected, `${message}: selectedTools`);
+
+			reloaded.select(["read"]);
+			await reloaded.emit(TREE.type, TREE);
+			assert.deepEqual(owned(reloaded.active()), reloadedActive, `${message}: tree active`);
+			assert.deepEqual(owned(await startAgent(reloaded)), reloadedSelected, `${message}: tree selectedTools`);
+		}
 	});
 
 	it("keeps bg_wait and subagent_supervisor as a resumed transcript recorded them, and recognises an unload without bg_wait", async () => {
