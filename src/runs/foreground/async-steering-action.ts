@@ -217,15 +217,23 @@ export async function steerAsyncRun(input: {
 				fs.rmSync(claimPath, { force: true });
 				throw new Error(`Failed to commit steering recovery interrupt: ${error instanceof Error ? error.message : String(error)}`);
 			}
-			const pauseDeadline = Date.now() + (input.recoveryTimeoutMs ?? 15_000);
+			const pauseBudgetMs = input.recoveryTimeoutMs ?? 15_000;
+			const pauseDeadline = Date.now() + pauseBudgetMs;
 			let paused: AsyncStatus | null = null;
+			let lastObservedState: string | undefined;
 			while (Date.now() <= pauseDeadline) {
 				if (input.signal?.aborted) break;
 				const candidate = readStatus(asyncDir);
+				lastObservedState = candidate?.state;
 				if (candidate?.state === "paused" && candidate.endedAt !== undefined) { paused = candidate; break; }
 				await new Promise<void>((resolve) => setTimeout(resolve, 50));
 			}
-			if (!paused) throw new Error("Source run did not reach confirmed paused state within 15 seconds; no replacement was launched and the recovery claim remains committed to prevent a delayed duplicate.");
+			if (!paused) {
+				// The attempt is over, so release single-flight for later steers. Keep the marker so a late
+				// acknowledgment of this request is still recorded as late.
+				fs.rmSync(claimPath, { force: true });
+				throw new Error(`Source run did not confirm a paused state within ${pauseBudgetMs / 1000} seconds after the recovery interrupt (last observed state: ${lastObservedState ?? "unknown"}). No replacement was launched and the steering message was not applied. Once it pauses, continue it with action "resume" and id "${status.runId}".`);
+			}
 			let recoveryTarget;
 			try {
 				recoveryTarget = resolveAsyncResumeTarget(

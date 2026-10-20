@@ -5,6 +5,7 @@
 ### Fixed
 
 - Local children launched with `systemPromptMode: replace` (every builtin except `delegate`) received the operator's `APPEND_SYSTEM.md`, because Pi fills an empty append-prompt slot from that file. They now start without it, like append-mode children and like the operator's global `AGENTS.md`. To give a child instructions from it, put them in the agent's prompt or an `agentOverrides` `systemPrompt`. Pane-native remote children are unchanged: they still start from the remote Pi's assembled prompt. Thanks to [@scnbln](https://github.com/scnbln) for [#2961](https://github.com/nicobailon/pi-subagents/pull/2961) ([#2960](https://github.com/nicobailon/pi-subagents/issues/2960)).
+- A default `steer` on a live single run that falls back to interrupt-and-recover, and whose child does not confirm the pause in time, no longer blocks every later steer on that run with "Another steering recovery is already committed". The failed attempt now releases its recovery claim, still launches no replacement, and its error states the real wait, the last observed run state, that the message was not applied, and that `action: "resume"` with the run id continues the run. Thanks to [@tglunde](https://github.com/tglunde) for reporting [#2956](https://github.com/nicobailon/pi-subagents/issues/2956).
 
 ## [0.79.1] - 2026-10-17
 

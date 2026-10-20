@@ -414,12 +414,14 @@ describe("acknowledged steering action", () => {
 		}
 	});
 
-	it("keeps the claim after an unconfirmed pause to prevent delayed duplicate recovery", async () => {
+	it("releases the claim but launches no replacement after an unconfirmed pause", async () => {
 		const runId = `steer-pause-unconfirmed-${Date.now().toString(36)}`;
 		const asyncDir = path.join(ASYNC_DIR, runId);
 		writeStatus(asyncDir, runningStatus(runId));
 		const kills: Array<{ pid: number; signal?: NodeJS.Signals | 0 }> = [];
 		let claimed = false;
+		let recovered = false;
+		let request: SteerRequest | undefined;
 		try {
 			const action = steerAsyncRun({
 				state: createState(), runId, message: "correct course", location: { asyncDir },
@@ -427,20 +429,69 @@ describe("acknowledged steering action", () => {
 				recoveryTimeoutMs: 50,
 				kill: (pid, signal) => { kills.push({ pid, signal }); return true; },
 				onRequestQueued: (requestPath) => {
-					const request = JSON.parse(fs.readFileSync(requestPath, "utf-8")) as SteerRequest;
+					request = JSON.parse(fs.readFileSync(requestPath, "utf-8")) as SteerRequest;
 					const routed = runningStatus(runId);
 					projectRequest(routed, request, ["routed"]);
 					writeStatus(asyncDir, routed);
 				},
 				onRecoveryCommitted: () => { claimed = true; },
-				recover: async () => successResult("replacement"),
+				recover: async () => { recovered = true; return successResult("replacement"); },
 			});
 			const result = await action;
 			assert.equal(claimed, true);
-			assert.match(result.content[0]!.text, /claim remains committed to prevent a delayed duplicate/);
+			assert.equal(result.isError, true);
+			assert.equal(recovered, false);
+			assert.match(result.content[0]!.text, /did not confirm a paused state within 0\.05 seconds/);
+			assert.match(result.content[0]!.text, /last observed state: running/);
+			assert.match(result.content[0]!.text, /No replacement was launched and the steering message was not applied/);
+			assert.match(result.content[0]!.text, new RegExp(`action "resume" and id "${runId}"`));
 			assert.equal(fs.existsSync(interruptRequestPath(asyncDir)), true);
 			assert.deepEqual(kills, [{ pid: 12345, signal: 0 }]);
-			assert.equal(fs.existsSync(path.join(asyncDir, "control", "steer-recovery", "claim.json")), true);
+			assert.ok(request);
+			assert.equal(fs.existsSync(path.join(asyncDir, "control", "steer-recovery", "claim.json")), false);
+			assert.equal(fs.existsSync(path.join(asyncDir, "control", "steer-recovery", `${Buffer.from(request.id).toString("base64url")}.json`)), true);
+		} finally {
+			removeAsyncDir(asyncDir);
+		}
+	});
+
+	it("recovers on a later steer after an earlier attempt timed out waiting for the pause", async () => {
+		const runId = `steer-pause-retry-${Date.now().toString(36)}`;
+		const asyncDir = path.join(ASYNC_DIR, runId);
+		const sessionFile = path.join(asyncDir, "child.jsonl");
+		writeStatus(asyncDir, runningStatus(runId));
+		fs.writeFileSync(sessionFile, "", "utf-8");
+		writePrivateAtomicJson(path.join(asyncDir, "recovery-descriptor.json"), recoveryDescriptor(runId));
+		const routeOnly = (requestPath: string): AsyncStatus => {
+			const request = JSON.parse(fs.readFileSync(requestPath, "utf-8")) as SteerRequest;
+			const routed = runningStatus(runId);
+			projectRequest(routed, request, ["routed"]);
+			writeStatus(asyncDir, routed);
+			return routed;
+		};
+		try {
+			const first = await steerAsyncRun({
+				state: createState(), runId, message: "first", location: { asyncDir },
+				ackTimeoutMs: 25, recoveryTimeoutMs: 50, kill: () => true,
+				onRequestQueued: routeOnly,
+				recover: async () => successResult("unexpected"),
+			});
+			assert.equal(first.isError, true);
+
+			let routed: AsyncStatus | undefined;
+			const second = await steerAsyncRun({
+				state: createState(), runId, message: "second", location: { asyncDir },
+				ackTimeoutMs: 25, recoveryTimeoutMs: 1_000, kill: () => true,
+				onRequestQueued: (requestPath) => { routed = routeOnly(requestPath); },
+				onRecoveryCommitted: () => {
+					assert.ok(routed);
+					writeStatus(asyncDir, { ...routed, state: "paused", endedAt: Date.now(), steps: [{ ...routed.steps![0]!, status: "paused", sessionFile }] });
+				},
+				recover: async () => successResult("replacement"),
+			});
+			assert.equal(second.isError, undefined, second.content[0]?.type === "text" ? second.content[0].text : undefined);
+			assert.equal(second.details.steering?.state, "recovered");
+			assert.equal(second.details.steering?.replacementRunId, "replacement");
 		} finally {
 			removeAsyncDir(asyncDir);
 		}
