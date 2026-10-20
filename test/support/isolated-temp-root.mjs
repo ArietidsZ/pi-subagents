@@ -2,6 +2,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+// The root test process starts with no inherited Pi runtime env: a host Pi shell (PI_PACKAGE_DIR, ...) or a
+// pi-subagents child shell (PI_SUBAGENT_CHILD, ...) would otherwise change what the tests exercise.
+// Kept: harness inputs that CI or a developer passes in on purpose. Nested test processes inherit the cleaned env.
+const harnessInput = /^PI_SUBAGENTS_(TEMP_ROOT|TERMINAL_EVIDENCE_DIR|NATIVE_PI_ROOT|NATIVE_SDK|\w+_SMOKE(_\w+)?)$/;
+if (process.env.PI_SUBAGENTS_TEST_LOADER === undefined) {
+	for (const name of Object.keys(process.env)) if (name.startsWith("PI_") && !harnessInput.test(name)) delete process.env[name];
+}
+
 const configuredTempRoot = process.env.PI_SUBAGENTS_TEMP_ROOT?.trim();
 const tempRoot = configuredTempRoot
 	? path.resolve(configuredTempRoot)
@@ -22,7 +30,6 @@ if (!nestedTestProcess || testFileProcess) process.env.PI_SUBAGENTS_TEST_PARENT_
 const isolatedHome = path.join(tempRoot, "home");
 process.env.HOME = isolatedHome;
 process.env.USERPROFILE = isolatedHome;
-if (!nestedTestProcess) delete process.env.PI_CODING_AGENT_DIR;
 process.env.PI_SUBAGENTS_TEST_LOADER = testFileProcess ? "test-file" : "loaded";
 
 if (!configuredTempRoot) {
