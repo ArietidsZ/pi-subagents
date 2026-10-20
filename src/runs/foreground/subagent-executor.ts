@@ -6030,6 +6030,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					const childOutputClaimPaths = new Map<string, string>();
 					const producedChildOutputPaths = new Set<string>();
 					const workflowSteps = new Map<string, NonNullable<AsyncStatus["steps"]>[number]>();
+					// Only a child that never reached a launch is certainly process-free: a resume launch spawns its runner
+					// before it reports the launch, so a stop during that window must not mark the step not async.
+					const dispatchedWorkflowChildKeys = new Set<string>();
 					const announcedWorkflowChildren = new Set<string>();
 					const announceWorkflowChild = (key: string, step: NonNullable<AsyncStatus["steps"]>[number]): void => {
 						if (announcedWorkflowChildren.has(key)) return;
@@ -6125,7 +6128,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 								existing.status = mapped;
 								if (entry.agent) existing.agent = entry.agent;
 								if (entry.runId) existing.runId = entry.runId;
-								if ((entry.state === "failed" || entry.state === "stopped") && !entry.runId && existing.async === undefined) existing.async = false;
+								if ((entry.state === "failed" || (entry.state === "stopped" && !dispatchedWorkflowChildKeys.has(entry.key))) && !entry.runId && existing.async === undefined) existing.async = false;
 								if (entry.state === "detached") existing.activityState = "needs_attention";
 								else if (existing.status !== "running") delete existing.activityState;
 								if (entry.state === "stopped") existing.stopped = true;
@@ -6149,7 +6152,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 									startedAt: Date.now(),
 									...(entryPhase ? { phase: entryPhase } : {}),
 									...(entry.runId ? { runId: entry.runId } : {}),
-									...((entry.state === "failed" || entry.state === "stopped") && !entry.runId ? { async: false } : {}),
+									...((entry.state === "failed" || (entry.state === "stopped" && !dispatchedWorkflowChildKeys.has(entry.key))) && !entry.runId ? { async: false } : {}),
 									...(entry.state === "detached" ? { activityState: "needs_attention" as const } : {}),
 									...(entry.state === "stopped" ? { stopped: true } : {}),
 								};
@@ -6305,6 +6308,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 										}
 									}
 								}
+								dispatchedWorkflowChildKeys.add(key);
 								if (workflowUsageBudget.budget && childParams.async === true) return workflowChildResult(key, buildRequestedModeError(childParams as SubagentParamsLike, "workflow usageBudget does not support async runs.run launches."), childParams, deps.state);
 								const budgetState = usageBudgetState(workflowUsageBudget.budget, sumResultsCost(workflowResults));
 								if (budgetState?.exhausted) return workflowChildResult(key, buildRequestedModeError(childParams as SubagentParamsLike, usageBudgetExceededMessage(budgetState)), childParams, deps.state, { state: "partial", reason: "budget_exhausted" });
