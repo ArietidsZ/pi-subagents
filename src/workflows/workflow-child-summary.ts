@@ -1,3 +1,4 @@
+import { hashedSegment } from "../runs/background/index-segment.ts";
 import type { AgentProgress, AsyncStatus, WorkflowChildActivity, WorkflowChildSummary } from "../shared/types.ts";
 import type { WorkflowScriptChildResult, WorkflowScriptTraceEntry } from "./scripted-workflow.ts";
 
@@ -47,6 +48,12 @@ function requiredId(value: string, label: string): string {
 	const id = bounded(value, MAX_REQUIRED_ID_BYTES);
 	if (!id) throw new Error(`${label} must be a non-empty identifier of at most ${MAX_REQUIRED_ID_BYTES} UTF-8 bytes.`);
 	return id;
+}
+
+/** Provider tool-call ids can be multi-kilobyte; the verbatim id stays in AsyncStatus.toolCallId, so an oversize id is recorded as its digest. */
+function parentToolCallId(value: string, label: string): string {
+	if (typeof value === "string" && value.trim() && Buffer.byteLength(value, "utf8") > MAX_REQUIRED_ID_BYTES) return hashedSegment(value);
+	return requiredId(value, label);
 }
 
 export function workflowChildSummary(input: {
@@ -145,7 +152,7 @@ export function workflowChildSummary(input: {
 	}
 	return {
 		version: 1,
-		parentToolCallId: requiredId(input.parentToolCallId, "parentToolCallId"),
+		parentToolCallId: parentToolCallId(input.parentToolCallId, "parentToolCallId"),
 		workflowRunId: requiredId(input.workflowRunId, "workflowRunId"),
 		inventoryComplete: input.inventoryComplete,
 		workflowState: input.workflowState,
@@ -179,5 +186,5 @@ export function parseWorkflowChildSummary(value: unknown): WorkflowChildSummary 
 	if (new Set(children.map((child) => child.childId)).size !== children.length) throw new Error("workflowChildren has duplicate childId values.");
 	if (typeof input.parentToolCallId !== "string") throw new Error("workflowChildren.parentToolCallId is invalid.");
 	if (typeof input.workflowRunId !== "string") throw new Error("workflowChildren.workflowRunId is invalid.");
-	return { version: 1, parentToolCallId: requiredId(input.parentToolCallId, "workflowChildren.parentToolCallId"), workflowRunId: requiredId(input.workflowRunId, "workflowChildren.workflowRunId"), inventoryComplete: input.inventoryComplete, workflowState, children };
+	return { version: 1, parentToolCallId: parentToolCallId(input.parentToolCallId, "workflowChildren.parentToolCallId"), workflowRunId: requiredId(input.workflowRunId, "workflowChildren.workflowRunId"), inventoryComplete: input.inventoryComplete, workflowState, children };
 }

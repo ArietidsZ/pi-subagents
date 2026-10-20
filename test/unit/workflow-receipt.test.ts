@@ -225,7 +225,7 @@ describe("workflow receipts", () => {
 		assert.deepEqual(readWorkflowReceipt(asyncRoot, "workflow-1").workflowChildren, summary);
 	});
 
-	it("round-trips long parent tool-call ids while rejecting ids over the summary bound", () => {
+	it("round-trips long parent tool-call ids and records ids over the summary bound as a digest", () => {
 		const parentToolCallId = `call_${"x".repeat(500)}`;
 		const summary = workflowChildSummary({ parentToolCallId, workflowRunId: "workflow-long-tool-call", workflowState: "completed", inventoryComplete: true });
 		const asyncRoot = tempRoot();
@@ -236,8 +236,12 @@ describe("workflow receipts", () => {
 
 		const overBoundParentToolCallId = `call_${"x".repeat(4_091)}`;
 		assert.equal(workflowChildSummary({ parentToolCallId: overBoundParentToolCallId, workflowRunId: "workflow-long-tool-call", workflowState: "completed", inventoryComplete: true }).parentToolCallId, overBoundParentToolCallId);
-		assert.throws(() => workflowChildSummary({ parentToolCallId: `${overBoundParentToolCallId}x`, workflowRunId: "workflow-long-tool-call", workflowState: "completed", inventoryComplete: true }), /at most 4096 UTF-8 bytes/);
-		assert.throws(() => parseWorkflowChildSummary({ ...summary, parentToolCallId: `${overBoundParentToolCallId}x` }), /at most 4096 UTF-8 bytes/);
+		const digestSummary = workflowChildSummary({ parentToolCallId: `${overBoundParentToolCallId}x`, workflowRunId: "workflow-long-tool-call", workflowState: "completed", inventoryComplete: true });
+		assert.match(digestSummary.parentToolCallId, /^~sha256-[0-9a-f]{64}$/);
+		assert.equal(parseWorkflowChildSummary({ ...summary, parentToolCallId: `${overBoundParentToolCallId}x` })?.parentToolCallId, digestSummary.parentToolCallId);
+		assert.equal(parseWorkflowChildSummary(digestSummary)?.parentToolCallId, digestSummary.parentToolCallId);
+		assert.throws(() => workflowChildSummary({ parentToolCallId: "   ", workflowRunId: "workflow-long-tool-call", workflowState: "completed", inventoryComplete: true }), /parentToolCallId must be a non-empty identifier of at most 4096 UTF-8 bytes/);
+		assert.throws(() => workflowChildSummary({ parentToolCallId: "call", workflowRunId: `w${"x".repeat(4_096)}`, workflowState: "completed", inventoryComplete: true }), /workflowRunId must be a non-empty identifier of at most 4096 UTF-8 bytes/);
 	});
 
 	it("uses workflow keys when flattened child indexes collide", () => {

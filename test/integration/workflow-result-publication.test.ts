@@ -22,6 +22,18 @@ async function bounded(promise: Promise<unknown>) {
 
 describe("host workflow result publication", { skip: !available }, () => {
 	installAsyncExecutionHooks();
+	it("launches a workflow when the parent tool-call id is multi-kilobyte", async () => {
+		const parentToolCallId = `call_abc__thought__${"A".repeat(10_000)}`;
+		const executor = createSubagentExecutor!({ pi: { events: createEventBus(), getSessionName: () => undefined }, state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			config: {}, asyncByDefault: false, tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p, discoverAgents: () => ({ agents: [] }),
+		});
+		const launch = await executor.execute(parentToolCallId, { workflowScript: "return 'ok';", async: true, mission: false }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		assert.notEqual(launch.isError, true, launch.content[0]?.text);
+		const payload = await readAsyncPayload(launch.details.asyncId!);
+		assert.equal(payload.success, true);
+		assert.match(payload.workflowChildren.parentToolCallId, /^~sha256-[0-9a-f]{64}$/);
+		assert.equal(JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, launch.details.asyncId!, "status.json"), "utf8")).toolCallId, parentToolCallId);
+	});
 	for (const background of [false, true]) it(`reports explicit async children as running after workflow dispatch (async=${background})`, async () => {
 		const release = path.join(tempDir, "release-child");
 		mockPi.onCall({ steps: [{ waitForPath: release, jsonl: [events.assistantMessage("Final child report")] }] });

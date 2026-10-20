@@ -5,6 +5,7 @@
 ### Fixed
 
 - Local children launched with `systemPromptMode: replace` (every builtin except `delegate`) received the operator's `APPEND_SYSTEM.md`, because Pi fills an empty append-prompt slot from that file. They now start without it, like append-mode children and like the operator's global `AGENTS.md`. To give a child instructions from it, put them in the agent's prompt or an `agentOverrides` `systemPrompt`. Pane-native remote children are unchanged: they still start from the remote Pi's assembled prompt. Thanks to [@scnbln](https://github.com/scnbln) for [#2961](https://github.com/nicobailon/pi-subagents/pull/2961) ([#2960](https://github.com/nicobailon/pi-subagents/issues/2960)).
+- A workflow launched from a tool call whose id was over 4,096 bytes failed with "parentToolCallId must be a non-empty identifier of at most 4096 UTF-8 bytes". Some providers produce ids that long, for example LiteLLM, which puts Gemini thought signatures in the tool-call id. The workflow now runs, and its `workflowChildren.parentToolCallId` records a `~sha256-` digest of the id. The full id is still saved as `toolCallId` in the run's `status.json`. Thanks to [@mxr576](https://github.com/mxr576) for reporting [#2962](https://github.com/nicobailon/pi-subagents/issues/2962).
 
 ## [0.79.1] - 2026-10-17
 

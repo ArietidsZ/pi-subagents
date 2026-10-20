@@ -15,7 +15,7 @@ export const MAX_INDEX_SEGMENT_BYTES = 255;
 const HASHED_INDEX_SEGMENT_PREFIX = "~sha256-";
 const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
-function hashedSegment(value: string): string {
+export function hashedSegment(value: string): string {
 	return `${HASHED_INDEX_SEGMENT_PREFIX}${createHash("sha256").update(value).digest("hex")}`;
 }
 
