@@ -314,6 +314,8 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 			agent: resultAgent,
 			mode: status.mode,
 			...(status.completionOwnerId ? { completionOwnerId: status.completionOwnerId } : {}),
+			...(status.parentWorkflowRunId ? { parentWorkflowRunId: status.parentWorkflowRunId } : {}),
+			...(status.workflowKey ? { workflowKey: status.workflowKey } : {}),
 			success: false,
 			state: "failed",
 			summary: message,

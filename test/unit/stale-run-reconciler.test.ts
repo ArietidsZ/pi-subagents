@@ -232,6 +232,35 @@ describe("async stale-run reconciliation", () => {
 		}
 	});
 
+	it("keeps a dead workflow child's workflow identity in its repaired result", () => {
+		const root = tempRoot("pi-stale-run-");
+		try {
+			const asyncDir = path.join(root, "run-child");
+			const resultsDir = path.join(root, "results");
+			writeStatus(asyncDir, {
+				runId: "run-child",
+				sessionId: "session-current",
+				parentWorkflowRunId: "workflow-1",
+				workflowKey: "memory",
+				mode: "single",
+				state: "running",
+				pid: 12345,
+				startedAt: 1000,
+				lastUpdate: 1000,
+				steps: [{ agent: "worker", status: "running", startedAt: 1000 }],
+			});
+
+			reconcileAsyncRun(asyncDir, { resultsDir, kill: () => { throw errno("ESRCH"); }, now: () => 2000 });
+
+			const resultJson = JSON.parse(fs.readFileSync(path.join(resultsDir, "run-child.json"), "utf-8"));
+			assert.equal(resultJson.state, "failed");
+			assert.equal(resultJson.parentWorkflowRunId, "workflow-1");
+			assert.equal(resultJson.workflowKey, "memory");
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("reports the observed runner exit code and signal when a killed runner left no result", () => {
 		const root = tempRoot("pi-stale-run-killed-");
 		try {
