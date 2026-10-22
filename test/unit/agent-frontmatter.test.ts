@@ -283,12 +283,12 @@ describe("frontmatter comments", () => {
 		assert.deepEqual(toolsOf("tools:\n  - read\n  # note\n  - bash"), ["read", "bash"]);
 		assert.deepEqual(toolsOf("tools:\n  - read\n# note\n  - bash"), ["read", "bash"]);
 		assert.deepEqual(toolsOf("tools:\n  - read # why\n  - bash"), ["read", "bash"]);
-		assert.deepEqual(toolsOf("tools: read, bash # why"), ["read", "bash"]);
 		assert.deepEqual(toolsOf("tools:\n  - read\n  # note, more\n  - bash"), ["read", "bash"]);
 	});
 
 	it("keeps # inside quoted list items and block scalars", () => {
 		assert.deepEqual(toolsOf('tools:\n  - "a # b"\n  - bash'), ['"a # b"', "bash"]);
+		assert.deepEqual(parseFrontmatterList(parseFrontmatter('---\ndefaultReads: "notes #1.md"\n---\nbody').frontmatter.defaultReads), ["notes #1.md"]);
 		const parsed = parseFrontmatter(`---
 description: |
   first

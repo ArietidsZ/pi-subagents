@@ -42,7 +42,8 @@ function foldBlock(block: string): string {
 /**
  * Normalize a simple-scalar frontmatter list from comma-separated or block-list syntax.
  * Only the standard `- item` marker is removed; ordinary hyphenated values stay intact.
- * YAML comments are dropped: comment-only items and a trailing ` #...` on an unquoted item.
+ * A trailing ` #...` comment is dropped from unquoted `- item` lines. Single-line values are left
+ * alone because parseFrontmatter has already removed their quotes, so `"notes #1.md"` must survive.
  */
 export function parseFrontmatterList(raw: string | undefined): string[] | undefined {
 	if (raw === undefined) return undefined;
@@ -50,9 +51,9 @@ export function parseFrontmatterList(raw: string | undefined): string[] | undefi
 		.split("\n")
 		.flatMap((line) => {
 			const value = line.trim();
-			const item = value.match(/^-\s+(.+)$/)?.[1] ?? value;
-			const uncommented = /^["']/.test(item) ? item : item.replace(/(?:^|\s)#.*$/, "");
-			return uncommented.split(",");
+			const listItem = value.match(/^-\s+(.+)$/)?.[1];
+			const item = listItem === undefined || /^["']/.test(listItem) ? listItem ?? value : listItem.replace(/(?:^|\s)#.*$/, "");
+			return item.split(",");
 		})
 		.map((value) => value.trim())
 		.filter(Boolean);
