@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- YAML comments in agent frontmatter lists changed the parsed values. An indented `# note` in a `tools:` list became a tool name, a column-zero comment dropped every item after it, and a trailing `# why` stayed on the item. Comments are now ignored in frontmatter lists; `#` inside quoted items and `|`/`>` block scalars is kept. Thanks to [@builtroller](https://github.com/builtroller) for [#2995](https://github.com/nicobailon/pi-subagents/issues/2995).
+
 ## [0.80.0] - 2026-10-21
 
 ### Highlights

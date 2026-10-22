@@ -42,6 +42,7 @@ function foldBlock(block: string): string {
 /**
  * Normalize a simple-scalar frontmatter list from comma-separated or block-list syntax.
  * Only the standard `- item` marker is removed; ordinary hyphenated values stay intact.
+ * YAML comments are dropped: comment-only items and a trailing ` #...` on an unquoted item.
  */
 export function parseFrontmatterList(raw: string | undefined): string[] | undefined {
 	if (raw === undefined) return undefined;
@@ -49,8 +50,9 @@ export function parseFrontmatterList(raw: string | undefined): string[] | undefi
 		.split("\n")
 		.flatMap((line) => {
 			const value = line.trim();
-			const listItem = value.match(/^-\s+(.+)$/);
-			return (listItem?.[1] ?? value).split(",");
+			const item = value.match(/^-\s+(.+)$/)?.[1] ?? value;
+			const uncommented = /^["']/.test(item) ? item : item.replace(/(?:^|\s)#.*$/, "");
+			return uncommented.split(",");
 		})
 		.map((value) => value.trim())
 		.filter(Boolean);
@@ -88,6 +90,10 @@ export function parseFrontmatter(content: string): { frontmatter: Record<string,
 	for (const line of lines) {
 		const indent = line.search(/\S|$/); // position of first non-whitespace char
 		const trimmed = line.trim();
+
+		// Comment lines are content only inside a | or > block scalar. Elsewhere they must
+		// neither end a pending list block nor become part of its value.
+		if (trimmed.startsWith("#") && !currentFolded && !currentLiteral) continue;
 
 		if (currentKey !== null && currentBlockLines !== null && (indent > (currentIndent ?? 0) || ((currentFolded || currentLiteral) && trimmed === ""))) {
 			// This line is part of the current block value
