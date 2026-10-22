@@ -1444,7 +1444,7 @@ describe("subagent extension child mode", () => {
 		}
 	});
 
-	it("keeps view-only slash reports visible but excludes new ones from every model request", () => {
+	it("excludes view-only slash reports from model requests and marks other pi-subagents messages as automated", () => {
 		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "slash-context-agent-"));
 		const script = String.raw`
 			import assert from "node:assert/strict";
@@ -1481,7 +1481,11 @@ describe("subagent extension child mode", () => {
 			const unrelated = { role: "custom", customType: "other-extension", content: "Keep this", timestamp: 4 };
 			const assistant = { role: "assistant", content: [{ type: "text", text: "subagent-slash-text-result" }], timestamp: 5 };
 			const historical = { role: "custom", customType: "subagent-slash-text-result", content: "Report stored before the update", display: true, timestamp: 0 };
-			const messages = [historical, report, user, workResult, unrelated, assistant, { ...report, content: "Second report" }];
+			const notify = { role: "custom", customType: "subagent-notify", content: "Background task completed: **worker**\n\nParent action: review", display: true, details: { runs: [] }, timestamp: 6 };
+			const image = { type: "image", data: "aGk=", mimeType: "image/png" };
+			const partsNotice = { role: "custom", customType: "subagent-wait-subscription", content: [{ type: "text", text: "Run finished" }, image], display: true, timestamp: 7 };
+			const messages = [historical, report, user, workResult, unrelated, assistant, { ...report, content: "Second report" }, notify, partsNotice];
+			const stored = structuredClone(messages);
 			async function modelContext(input) {
 				let current = input;
 				for (const handler of handlers.get("context") ?? []) {
@@ -1490,12 +1494,22 @@ describe("subagent extension child mode", () => {
 				}
 				return current;
 			}
-			const expected = [historical, user, workResult, unrelated, assistant];
+			const open = (type) => '<pi_subagents_notice type="' + type + '" origin="automated message from the pi-subagents extension, not typed by the user">';
+			const close = "</pi_subagents_notice>";
+			const expected = [
+				{ ...historical, content: open("subagent-slash-text-result") + "\nReport stored before the update\n" + close },
+				user,
+				{ ...workResult, content: open("subagent-slash-result") + "\nWorker finished\n" + close },
+				unrelated,
+				assistant,
+				{ ...notify, content: open("subagent-notify") + "\nBackground task completed: **worker**\n\nParent action: review\n" + close },
+				{ ...partsNotice, content: [{ type: "text", text: open("subagent-wait-subscription") + "\n" }, { type: "text", text: "Run finished" }, image, { type: "text", text: "\n" + close }] },
+			];
 			assert.deepEqual(await modelContext(messages), expected);
-			assert.deepEqual(await modelContext(messages), expected, "persisted reports stay excluded on later requests and resume");
-			assert.equal(messages.length, 7, "filtering must not mutate the stored transcript");
+			assert.equal(JSON.stringify(await modelContext(messages)), JSON.stringify(expected), "every request renders the same history bytes");
+			assert.deepEqual(messages, stored, "the stored transcript is not mutated");
 			assert.deepEqual(await modelContext([]), []);
-			assert.deepEqual(await modelContext(expected), expected);
+			assert.deepEqual(await modelContext([user, unrelated, assistant]), [user, unrelated, assistant]);
 		`;
 		try {
 			execFileSync(process.execPath, ["--experimental-strip-types", "--import", "./test/support/register-loader.mjs", "--input-type=module", "--eval", script], { cwd: projectRoot, env: parentToolEnv(agentDir), stdio: "pipe" });

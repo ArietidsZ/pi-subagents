@@ -5,6 +5,7 @@
 ### Fixed
 
 - On Windows, Pi could freeze for about 8 seconds on every start when the subagent temp results directory had broken permissions (`EPERM`/`EACCES`), because the startup check ran the full file-system retry ladder before switching to its per-process fallback directory. The startup check now retries for at most 85 ms per operation before falling back; result writes and other file operations keep the full retry ladder. Thanks to [@821869798](https://github.com/821869798) for [#2998](https://github.com/nicobailon/pi-subagents/issues/2998).
+- The parent model can now tell subagent notices from text you typed. Pi sends extension messages to the model as ordinary user messages, so a completion notice that started a turn on its own looked like a user request. pi-subagents notices the model sees, including completion and supervisor notices, wait results and `/run` results, are now wrapped in a `<pi_subagents_notice>` tag that names the message type and says it is an automated message from pi-subagents. Only the model request changes; the stored transcript and the chat view stay the same. Thanks to [@ktheunlikedoll](https://github.com/ktheunlikedoll) for [#2994](https://github.com/nicobailon/pi-subagents/issues/2994) and [@isjiajia01](https://github.com/isjiajia01) for the context-hook approach.
 
 ## [0.80.0] - 2026-10-21
 

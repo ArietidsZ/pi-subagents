@@ -47,6 +47,7 @@ import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { createResultDeliveryOwnership } from "../runs/background/result-delivery-ownership.ts";
 import { createScheduledRunManager } from "../runs/background/scheduled-runs.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
+import { ADMIN_MESSAGE_TYPE } from "../slash/subagents-admin.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
 import { registerMainWatchdog } from "../watchdog/register-main.ts";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
@@ -617,14 +618,31 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		);
 	});
 
-	// Keep view-only reports in the transcript/RPC stream, but out of model context.
-	// SLASH_RESULT_TYPE carries delegated work and must remain model-visible.
-	pi.on("context", (event) => ({
-		messages: event.messages.filter((message) =>
-			message.role !== "custom"
-			|| message.customType !== SLASH_TEXT_RESULT_TYPE
-			|| (message.details as { viewOnly?: unknown } | undefined)?.viewOnly !== true),
-	}));
+	// Pi sends custom messages to the model as plain user messages, so every model-visible
+	// pi-subagents message is wrapped in a marker naming its source. The marker depends only on
+	// the message, so history renders the same bytes every turn and cached prefixes stay valid.
+	const markedMessageTypes = new Set([...SUBAGENT_MESSAGE_TYPES, "subagent-compaction-resume", SLASH_RESULT_TYPE, SLASH_TEXT_RESULT_TYPE, ADMIN_MESSAGE_TYPE]);
+	pi.on("context", (event) => {
+		const messages: typeof event.messages = [];
+		for (const message of event.messages) {
+			if (message.role !== "custom" || !markedMessageTypes.has(message.customType)) {
+				messages.push(message);
+				continue;
+			}
+			// Keep view-only reports in the transcript/RPC stream, but out of model context.
+			// SLASH_RESULT_TYPE carries delegated work and must remain model-visible.
+			if (message.customType === SLASH_TEXT_RESULT_TYPE && (message.details as { viewOnly?: unknown } | undefined)?.viewOnly === true) continue;
+			const open = `<pi_subagents_notice type="${message.customType}" origin="automated message from the pi-subagents extension, not typed by the user">`;
+			const close = "</pi_subagents_notice>";
+			messages.push({
+				...message,
+				content: typeof message.content === "string"
+					? `${open}\n${message.content}\n${close}`
+					: [{ type: "text", text: `${open}\n` }, ...message.content, { type: "text", text: `\n${close}` }],
+			});
+		}
+		return { messages };
+	});
 
 	pi.registerMessageRenderer<undefined>(SLASH_TEXT_RESULT_TYPE, (message, _options, _theme) => {
 		const content = typeof message.content === "string"
