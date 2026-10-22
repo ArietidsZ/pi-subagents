@@ -10,6 +10,7 @@ import type { JsonSchemaObject } from "../../shared/types.ts";
 import type { ResolvedAcceptanceReportMode } from "./acceptance.ts";
 
 export const MISSING_STRUCTURED_OUTPUT_CALL_ERROR = "Missing structured_output call; this step has outputSchema and must finish by calling structured_output.";
+export const STRUCTURED_OUTPUT_FOLLOW_UP = "You ended without calling `structured_output`. Call it now with your result. Do not repeat the work.";
 export const MISSING_STRUCTURED_ACCEPTANCE_REPORT_ERROR = "Missing acceptanceReport in structured_output call; acceptance.report is \"on\".";
 export const STRUCTURED_OUTPUT_REJECTION_ERROR = "structured_output was invoked but no valid output was captured.";
 export const INVALID_STRUCTURED_OUTPUT_SCHEMA_ERROR = "Structured output invocation was rejected: invalid outputSchema.";

@@ -39,7 +39,7 @@ import {
 import registerSubagentExtension from "../../src/extension/index.ts";
 import { handleSubagentControlNotice } from "../../src/extension/control-notices.ts";
 import { discoverAgents } from "../../src/agents/agents.ts";
-import { INVALID_STRUCTURED_OUTPUT_SCHEMA_ERROR, validateStructuredOutputValue } from "../../src/runs/shared/structured-output.ts";
+import { INVALID_STRUCTURED_OUTPUT_SCHEMA_ERROR, STRUCTURED_OUTPUT_FOLLOW_UP, validateStructuredOutputValue } from "../../src/runs/shared/structured-output.ts";
 import {
 	SUBAGENT_DELEGATION_REQUEST_EVENT,
 	SUBAGENT_DELEGATION_RESPONSE_EVENT,
@@ -2394,6 +2394,31 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		assert.match(child?.error ?? "", /Missing structured_output call/);
 		assert.ok(child?.structuredOutputPath);
 		assert.equal(fs.existsSync(path.dirname(child.structuredOutputPath)), false);
+	});
+
+	it("gives a structured child one follow-up turn to call structured_output", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const prompts = () => fs.readdirSync(mockPi.dir).filter((name) => name.startsWith("call-") && name.endsWith(".json"))
+			.map((name) => (JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf-8")) as { args: string[] }).args.at(-1));
+		const executor = makeExecutor([makeAgent("echo")]);
+		const params = { agent: "echo", task: "Return structured data", outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } }, acceptance: false, artifacts: false } as const;
+		mockPi.onCall({ output: "prose without the tool call" });
+		mockPi.onCall({ matchArgIncludes: STRUCTURED_OUTPUT_FOLLOW_UP, structuredOutput: { ok: true } });
+
+		const recovered = await executor.execute("single-schema-follow-up", params, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+
+		assert.equal(recovered.isError, undefined, recovered.content[0]?.text);
+		assert.deepEqual(recovered.details.results[0]?.structuredOutput, { ok: true });
+		assert.equal(prompts().filter((prompt) => prompt === STRUCTURED_OUTPUT_FOLLOW_UP).length, 1);
+
+		mockPi.reset();
+		mockPi.onCall({ output: "prose without the tool call" });
+		const missing = await executor.execute("single-schema-follow-up-missing", params, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+
+		assert.equal(missing.isError, true);
+		assert.match(missing.details.results[0]?.error ?? "", /Missing structured_output call/);
+		assert.equal(missing.details.results[0]?.usage.turns, 2);
+		assert.equal(prompts().filter((prompt) => prompt === STRUCTURED_OUTPUT_FOLLOW_UP).length, 1);
+		assert.equal(prompts().length, 2);
 	});
 
 	it("reports rejected structured_output evidence and lets a later valid call win", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {

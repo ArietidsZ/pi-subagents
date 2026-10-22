@@ -333,7 +333,8 @@ syncBuiltinESMExports();
 					assert.ok(transcript);
 					assert.match(fs.readFileSync(transcript, "utf-8"), /Blocked by policy/);
 				}
-				assert.equal(mockPi.callCount(), 1);
+				// A structured child that never calls structured_output gets one follow-up prompt.
+				assert.equal(mockPi.callCount(), diagnostic === "structured" && !interrupted ? 2 : 1);
 			});
 		}
 	}

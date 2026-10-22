@@ -65,7 +65,7 @@ import { deriveChildSessionName } from "../../shared/child-session-name.ts";
 import { assertAgentAllowedByCapabilityCeiling, intersectSubagentCapabilityCeilings, resolveCurrentSubagentCapabilityCeiling } from "../shared/capability-ceiling.ts";
 import { qualifyModelWithProvider, resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { assertThinkingWithinCeiling, intersectThinkingCeilings } from "../../shared/thinking-ceiling.ts";
-import { formatStructuredOutputRejectionError, MISSING_STRUCTURED_ACCEPTANCE_REPORT_ERROR, MISSING_STRUCTURED_OUTPUT_CALL_ERROR } from "../shared/structured-output.ts";
+import { formatStructuredOutputRejectionError, MISSING_STRUCTURED_ACCEPTANCE_REPORT_ERROR, MISSING_STRUCTURED_OUTPUT_CALL_ERROR, STRUCTURED_OUTPUT_FOLLOW_UP } from "../shared/structured-output.ts";
 import { formatMidToolExitError, isOrdinaryToolForMidToolExit } from "../shared/process-signal.ts";
 import { formatChildToolDiagnostic } from "../shared/tool-availability.ts";
 import { formatChildModelResolutionDiagnostic, formatInheritedProviderDiagnostic, isChildModelResolutionFailure } from "../shared/model-resolution-diagnostic.ts";
@@ -1468,6 +1468,24 @@ async function runSingleAttempt(
 				messageBaseline = created.messages.length;
 				// A runtime replacement can stop a child that detached while it was still being created.
 				if (!hostStopReason) await created.prompt(`Task: ${task}`);
+				// A structured child that finished normally without calling structured_output gets one more turn (#2997).
+				if (options.structuredOutput
+					&& !structuredOutputToolInvoked
+					&& !sessionSettled
+					&& !lifecycleFinished
+					&& !hostStopReason
+					&& !created.shutDown
+					&& !abortedBySignal
+					&& !interruptedByControl
+					&& !result.timedOut
+					&& !forcedTermination
+					&& !result.error
+					&& !assistantError
+					&& !capture.toolDiagnostic()
+					&& !(progress.currentTool && isOrdinaryToolForMidToolExit(progress.currentTool))) {
+					applyChildLifecycle("cancel-drain");
+					await created.prompt(STRUCTURED_OUTPUT_FOLLOW_UP);
+				}
 				settle(undefined);
 			} catch (error) {
 				settle(error ?? new Error("Child session failed."));

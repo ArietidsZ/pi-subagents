@@ -28,6 +28,8 @@ import { createReportedChildSessionInput, type InProcessChildLaunch } from "../s
 import { createPartialOutputTracker, formatPartialOutput, type PartialOutputCause } from "../shared/partial-output.ts";
 import { childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../shared/child-session.ts";
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
+import { isOrdinaryToolForMidToolExit } from "../shared/process-signal.ts";
+import { STRUCTURED_OUTPUT_FOLLOW_UP } from "../shared/structured-output.ts";
 import { formatSteerMessage } from "../shared/subagent-prompt-runtime.ts";
 import type { SteerDeliveryStatus, SteerRequest } from "./control-channel.ts";
 import { takeMatchingAcceptedSteer, unconsumedSteerReason } from "./steering.ts";
@@ -710,6 +712,22 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				if (interrupted || timedOut || stopped) abortChild();
 				messageBaseline = created.messages.length;
 				await created.prompt(input.prompt);
+				// A structured child that finished normally without calling structured_output gets one more turn (#2997).
+				if (input.launch.session.runtime.structuredOutput
+					&& !structuredOutputToolInvoked
+					&& !settled
+					&& !created.shutDown
+					&& !interrupted
+					&& !timedOut
+					&& !stopped
+					&& !forcedTermination
+					&& !error
+					&& !assistantError
+					&& !input.launch.capture.toolDiagnostic()
+					&& !(currentTool && isOrdinaryToolForMidToolExit(currentTool))) {
+					applyChildLifecycle("cancel-drain");
+					await created.prompt(STRUCTURED_OUTPUT_FOLLOW_UP);
+				}
 				promptSettled = true;
 				settle(undefined);
 			} catch (promptError) {
