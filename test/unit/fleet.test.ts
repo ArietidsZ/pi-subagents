@@ -349,7 +349,9 @@ describe("native subagent fleet", () => {
 		}
 	});
 
-	it("shows live prompt summaries and opens Prompt Audit with the authored prompt visible", async () => {
+	it("shows live prompt summaries and opens Prompt Audit with the authored prompt visible", async (t) => {
+		// Frames are compared whole, and running rows show wall-clock elapsed time.
+		t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
 		const sentinel = "PROMPT_AUDIT_SENTINEL_1021";
 		const secondSentinel = "PROMPT_AUDIT_SECOND_CHILD";
 		const state = stateForTest();
@@ -1198,7 +1200,8 @@ describe("native subagent fleet", () => {
 		}
 	});
 
-	it("selects rendered roster rows and consumes normalized output wheel input", () => {
+	it("selects rendered roster rows and consumes normalized output wheel input", (t) => {
+		t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-pointer-"));
 		try {
 			writeAsyncRun(root, { id: "pointer", agents: ["alpha", "beta"], transcript: [{ recordType: "message", role: "assistant", text: Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n") }] });
@@ -1258,7 +1261,8 @@ describe("native subagent fleet", () => {
 		} finally { component.dispose(); }
 	});
 
-	it("routes fullscreen terminal mouse input through the host overlay and preserves regular keyboard navigation", () => {
+	it("routes fullscreen terminal mouse input through the host overlay and preserves regular keyboard navigation", (t) => {
+		t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-host-"));
 		try {
 			writeAsyncRun(root, { id: "host", agents: ["alpha", "beta"], transcript: [{ recordType: "message", role: "assistant", text: Array.from({ length: 200 }, (_, i) => `host line ${i}`).join("\n") }] });
