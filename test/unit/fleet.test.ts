@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { visibleWidth, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { TuiAltScreen, TuiMainScreen, visibleWidth, type Component, type TuiMouseEvent, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { registerInspector } from "../../src/api/inspectors.ts";
 import { getInspectorPlugins, registerInspectorEventListener } from "../../src/inspectors/plugins.ts";
@@ -396,6 +396,10 @@ describe("native subagent fleet", () => {
 			component.handleInput("p");
 			assert.doesNotMatch(component.render(100).join("\n"), /Prompt text hidden|Enter reveal|r hide/);
 			assert.match(component.render(100).join("\n"), new RegExp(sentinel));
+			const pointer: TuiMouseEvent = { type: "click", button: "left", x: 5, y: 4, screenX: 5, screenY: 4, width: 100, height: 23, shift: false, alt: false, ctrl: false };
+			const promptFrame = component.render(100);
+			assert.equal(component.handleMouse(pointer)?.handled, true);
+			assert.deepEqual(component.render(100), promptFrame, "Prompt Audit owns roster clicks");
 			component.handleInput("2");
 			assert.match(component.render(100).join("\n"), /Read from: context\.md/);
 			component.handleInput("3");
@@ -405,6 +409,9 @@ describe("native subagent fleet", () => {
 			assert.deepEqual(clipboardWrites, [`[Read from: context.md]\n\n${sentinel}\n\n---\nRuntime acceptance`]);
 			assert.match(component.render(100).join("\n"), /Copied visible prompt view/);
 			component.handleInput("g");
+			const redoFrame = component.render(100);
+			assert.equal(component.handleMouse({ ...pointer, type: "wheel", x: 70, wheelDelta: 5 })?.handled, true);
+			assert.deepEqual(component.render(100), redoFrame, "redo draft owns wheel input");
 			for (const char of "make narrower") component.handleInput(char);
 			component.handleInput("\r");
 			await new Promise((resolve) => setImmediate(resolve));
@@ -1115,7 +1122,7 @@ describe("native subagent fleet", () => {
 				assert.ok(component.render(100).length <= 8, "short-terminal render should fit the overlay's 85% height cap");
 				component.handleInput("\x1b[6~");
 				component.handleInput("r");
-				assert.ok(renderRequests >= 2);
+				assert.equal(renderRequests, 1, "paging at the bottom is a no-op; refresh requests a render");
 				component.handleInput("\x1b");
 				assert.equal(closed, true);
 			} finally {
@@ -1189,6 +1196,167 @@ describe("native subagent fleet", () => {
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
+	});
+
+	it("selects rendered roster rows and consumes normalized output wheel input", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-pointer-"));
+		try {
+			writeAsyncRun(root, { id: "pointer", agents: ["alpha", "beta"], transcript: [{ recordType: "message", role: "assistant", text: Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n") }] });
+			const component = new SubagentFleetComponent({ terminal: { rows: 32, columns: 100 }, requestRender() {} } as never, theme as never, stateForTest(), () => {}, { asyncDirRoot: root, resultsDir: path.join(root, "results"), refreshMs: 60_000, markdownTheme });
+			const event = (changes: Partial<TuiMouseEvent>): TuiMouseEvent => ({ type: "wheel", button: "none", x: 70, y: 10, screenX: 81, screenY: 15, width: 100, height: 27, shift: false, alt: false, ctrl: false, wheelDelta: -1, ...changes });
+			try {
+				const bottom = component.render(100);
+				assert.equal((component as Component).handleMouse?.(event({}))?.handled, true, "output wheel must be owned");
+				const wheel = component.render(100);
+				assert.notDeepEqual(wheel, bottom);
+				component.handleInput("J");
+				assert.deepEqual(component.render(100), bottom);
+				assert.equal((component as Component).handleMouse?.(event({ type: "click", button: "left", x: 5, y: 4 }))?.handled, true);
+				const selected = component.render(100);
+				assert.match(selected[1]!, /beta/);
+				for (const outside of [{ x: 5, y: 4 }, { x: 50, y: 0 }]) {
+					assert.equal((component as Component).handleMouse?.(event(outside))?.handled, true, "wheel outside the output pane must not reach the transcript");
+					assert.deepEqual(component.render(100), selected);
+				}
+			} finally { component.dispose(); }
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	it("hit-tests the rendered roster across refresh, removal, resize, blank rows, and unsupported pointers", () => {
+		const state = stateForTest();
+		for (let i = 0; i < 30; i++) state.foregroundControls.set(`run-${i}`, { runId: `run-${i}`, mode: "single", startedAt: i + 1, updatedAt: i + 1, currentAgent: `agent-${i}`, currentIndex: 0 });
+		const terminal = { rows: 32, columns: 100 };
+		const component = new SubagentFleetComponent({ terminal, requestRender() {} } as never, theme as never, state, () => {}, { refreshMs: 60_000, markdownTheme });
+		const click = (changes: Partial<TuiMouseEvent> = {}) => component.handleMouse({ type: "click", button: "left", x: 5, y: 3, screenX: 40, screenY: 20, width: 100, height: 27, shift: false, alt: false, ctrl: false, ...changes });
+		try {
+			component.handleInput("\x1b[F");
+			const rendered = component.render(100);
+			const firstVisible = /agent-\d+/.exec(rendered[3]!)![0];
+			for (const changes of [{ x: 0 }, { x: 37 }, { y: 2 }, { button: "right" as const }, { type: "drag" as const }, { shift: true }]) {
+				assert.equal(click(changes), undefined);
+				assert.match(component.render(100)[1]!, /agent-29/);
+			}
+			// Insert a row ahead of the rendered slice without rendering a replacement frame.
+			state.foregroundControls.set("inserted", { runId: "inserted", mode: "single", startedAt: 0.5, updatedAt: 1, currentAgent: "inserted", currentIndex: 0 });
+			component.handleInput("r");
+			assert.equal(click()?.handled, true);
+			assert.ok(component.render(100)[1]!.includes(firstVisible), "click resolves rendered key, not a refreshed row index");
+			component.handleInput("\x1b[F");
+			const lastFrame = component.render(100);
+			const removedAgent = /agent-\d+/.exec(lastFrame[3]!)![0];
+			state.foregroundControls.delete(removedAgent.replace("agent", "run"));
+			component.handleInput("r");
+			assert.equal(click(), undefined, "removed rendered keys are ignored");
+			terminal.rows = 20;
+			assert.equal(click(), undefined, "pre-resize hit regions cannot select");
+			component.render(35);
+			assert.equal(click({ width: 35 }), undefined);
+			state.foregroundControls.clear();
+			state.foregroundControls.set("only", { runId: "only", mode: "single", startedAt: 1, updatedAt: 1, currentAgent: "only", currentIndex: 0 });
+			component.handleInput("r"); component.render(100);
+			assert.equal(click({ y: 5 }), undefined, "blank roster rows are not targets");
+		} finally { component.dispose(); }
+	});
+
+	it("routes fullscreen terminal mouse input through the host overlay and preserves regular keyboard navigation", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-host-"));
+		try {
+			writeAsyncRun(root, { id: "host", agents: ["alpha", "beta"], transcript: [{ recordType: "message", role: "assistant", text: Array.from({ length: 200 }, (_, i) => `host line ${i}`).join("\n") }] });
+			for (const fullscreen of [true, false]) {
+				let input: (data: string) => void = () => {};
+				const writes: string[] = [];
+				const terminal = {
+					rows: 40, columns: 120, kittyProtocolActive: false,
+					start(handler: (data: string) => void) { input = handler; }, stop() {}, async drainInput() {},
+					write(data: string) { writes.push(data); }, moveBy() {}, hideCursor() {}, showCursor() {},
+					clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+				};
+				const tui = fullscreen ? new TuiAltScreen(terminal, false, undefined, { mouse: true, wheelScrollLines: 1 }) : new TuiMainScreen(terminal);
+				const component = new SubagentFleetComponent(tui, theme as never, stateForTest(), () => {}, { asyncDirRoot: root, resultsDir: path.join(root, "results"), refreshMs: 60_000, markdownTheme, actions: { async steer() { return { text: "steered" }; }, stop() { throw new Error("pointer must not activate stop"); } } });
+				tui.addChild({ render: () => Array.from({ length: 200 }, (_, i) => `transcript ${i}`), invalidate() {} });
+				tui.start();
+				const overlay = tui.showOverlay(component, { width: 100, row: 2, col: 8 });
+				try {
+					tui.renderNow();
+					const bottom = component.render(100);
+					if (fullscreen && tui instanceof TuiAltScreen) {
+						// The transcript starts following its bottom. Unhandled wheel input would fall back to
+						// transcript scrolling, which clamps silently at either bound; move the transcript away
+						// from both bounds first so fallback in either direction becomes observable.
+						const endOffset = tui.viewportTop;
+						tui.scrollBy(-10);
+						tui.renderNow();
+						const top = tui.viewportTop;
+						assert.ok(top > 0, "setup must leave upward wheel-fallback room in the transcript");
+						assert.ok(top < endOffset, "setup must leave downward wheel-fallback room in the transcript");
+						const bounds = overlay.getBounds()!;
+						const mouse = (button: number, x: number, y: number, release = false) => input(`\x1b[<${button};${bounds.col + x + 1};${bounds.row + y + 1}${release ? "m" : "M"}`);
+						mouse(64, 70, 12);
+						tui.renderNow();
+						assert.notDeepEqual(component.render(100), bottom);
+						assert.equal(tui.viewportTop, top);
+						for (let i = 0; i < 230; i++) mouse(64, 70, 12);
+						tui.renderNow();
+						assert.equal(tui.viewportTop, top, "top limit must consume wheel");
+						for (let i = 0; i < 230; i++) mouse(65, 70, 12);
+						tui.renderNow();
+						assert.equal(tui.viewportTop, top, "bottom limit must consume wheel");
+						assert.deepEqual(component.render(100), bottom);
+						mouse(0, 5, 4); mouse(0, 5, 4, true);
+						tui.renderNow();
+						assert.match(component.render(100)[1]!, /beta/);
+						input("k"); tui.renderNow();
+						input("D"); tui.renderNow();
+						const modal = component.render(100);
+						mouse(64, 70, 12); mouse(0, 5, 4); mouse(0, 5, 4, true);
+						tui.renderNow();
+						assert.deepEqual(component.render(100), modal);
+						assert.equal(tui.viewportTop, top, "confirmation modal must not leak wheel input");
+					} else {
+						input("K"); tui.renderNow();
+						assert.notDeepEqual(component.render(100), bottom);
+						input("J"); tui.renderNow();
+						assert.deepEqual(component.render(100), bottom);
+						assert.ok(!writes.some((data) => /\x1b\[\?100[0236]h/.test(data)), "regular mode must not enable mouse tracking");
+					}
+				} finally { overlay.hide(); component.dispose(); tui.stop(); }
+			}
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	it("records long-transcript cache and render-request counters", (t) => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-counters-"));
+		const original = fsDefault.openSync;
+		let reads = 0;
+		let requests = 0;
+		let scans = 0;
+		const readdir = fsDefault.readdirSync;
+		try {
+			writeAsyncRun(root, { id: "counters", transcript: [{ recordType: "message", role: "assistant", text: Array.from({ length: 1000 }, (_, i) => `detail ${i}`).join("\n") }] });
+			const component = new SubagentFleetComponent({ terminal: { rows: 32, columns: 100 }, requestRender() { requests++; } } as never, theme as never, stateForTest(), () => {}, { asyncDirRoot: root, resultsDir: path.join(root, "results"), refreshMs: 60_000, markdownTheme });
+			fsDefault.openSync = ((file: Parameters<typeof original>[0], ...args: unknown[]) => {
+				if (String(file).endsWith("transcript-0.jsonl")) reads++;
+				return (original as Function)(file, ...args);
+			}) as typeof original;
+			t.mock.method(fsDefault, "readdirSync", (...args: Parameters<typeof readdir>) => { scans++; return readdir(...args); });
+			syncBuiltinESMExports();
+			const start = performance.now();
+			try {
+				component.render(100);
+				for (let i = 0; i < 20; i++) { component.handleInput("K"); component.render(100); }
+				assert.equal(reads, 1);
+				assert.equal(requests, 20);
+				t.diagnostic(`1000 lines / 21 renders: transcript reads=${reads}, requests=${requests}, elapsed=${(performance.now() - start).toFixed(1)}ms`);
+				for (let i = 0; i < 20; i++) {
+					component.handleMouse({ type: "wheel", button: "none", x: 70, y: 12, screenX: 70, screenY: 12, width: 100, height: 27, shift: false, alt: false, ctrl: false, wheelDelta: -1 });
+					component.render(100);
+				}
+				assert.equal(reads, 1, "pointer renders reuse the transcript cache");
+				assert.equal(scans, 0, "pointer handling and rendering do not scan directories");
+				assert.equal(requests, 40);
+				t.diagnostic(`after 20 wheel movements: transcript reads=${reads}, directory scans=${scans}, requests=${requests}`);
+			} finally { component.dispose(); }
+		} finally { fsDefault.openSync = original; t.mock.restoreAll(); syncBuiltinESMExports(); fs.rmSync(root, { recursive: true, force: true }); }
 	});
 
 	it("renders structured tool activity and assistant Markdown when a child transcript is available", () => {
@@ -1984,6 +2152,120 @@ describe("native subagent fleet", () => {
 				lines = component.render(90);
 				assert.ok(lines.some((line) => line.includes("LATEST LIVE OUTPUT")), "live transcript should keep following new output");
 				assert.ok(renderRequests > 0);
+			} finally {
+				component.dispose();
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("selecting a child shows the bottom and reselecting returns there without per-child memory", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-select-follow-"));
+		try {
+			for (const id of ["alpha-run", "beta-run"]) {
+				writeAsyncRun(root, {
+					id,
+					agents: [id.replace("-run", "")],
+					transcript: [{ recordType: "message", role: "assistant", text: Array.from({ length: 200 }, (_, i) => `${id} line ${i}`).join("\n") }],
+				});
+			}
+			const component = new SubagentFleetComponent(
+				{ terminal: { rows: 32, columns: 100 }, requestRender() {} } as never,
+				theme as never,
+				stateForTest(),
+				() => {},
+				{ asyncDirRoot: root, resultsDir: path.join(root, "results"), refreshMs: 60_000, markdownTheme },
+			);
+			try {
+				const opening = component.render(100);
+				assert.ok(opening.some((line) => line.includes("alpha-run line 199")), "opening Fleet shows the newest output");
+				assert.ok(!opening.some((line) => line.includes("alpha-run line 0")));
+				for (let i = 0; i < 20; i++) component.handleInput("K");
+				const scrolledAway = component.render(100);
+				assert.notDeepEqual(scrolledAway, opening, "scrolling away must move the viewport");
+				assert.ok(!scrolledAway.some((line) => line.includes("alpha-run line 199")));
+				component.handleInput("j");
+				const betaBottom = component.render(100);
+				assert.ok(betaBottom.some((line) => line.includes("beta-run line 199")), "selecting a child shows its newest output");
+				assert.ok(!betaBottom.some((line) => line.includes("beta-run line 0")));
+				for (let i = 0; i < 20; i++) component.handleInput("K");
+				const betaScrolled = component.render(100);
+				assert.ok(!betaScrolled.some((line) => line.includes("beta-run line 199")));
+				component.handleInput("k");
+				const reselected = component.render(100);
+				assert.ok(reselected.some((line) => line.includes("alpha-run line 199")), "reselecting returns to the bottom with no per-child memory");
+			} finally {
+				component.dispose();
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("Prompt Audit opens at top, child and view changes reset top, and exiting resumes bottom follow", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-audit-follow-"));
+		try {
+			const state = stateForTest();
+			state.baseCwd = root;
+			state.artifactDirPreference = "project";
+			const control = {
+				runId: "audit-follow-run",
+				sessionId: "session-current",
+				mode: "parallel" as const,
+				startedAt: 10,
+				updatedAt: 20,
+				activeChildren: new Map([
+					[0, { index: 0, agent: "worker", startedAt: 10, updatedAt: 20 }],
+					[1, { index: 1, agent: "reviewer", startedAt: 11, updatedAt: 21 }],
+				]),
+			};
+			state.foregroundControls.set(control.runId, control);
+			const artifactsRoot = getProjectArtifactsDir(root);
+			for (const [agent, index] of [["worker", 0], ["reviewer", 1]] as const) {
+				const lines = Array.from({ length: 200 }, (_, i) => `${agent} line ${i}`).join("\n");
+				fs.mkdirSync(artifactsRoot, { recursive: true });
+				fs.writeFileSync(getArtifactPaths(artifactsRoot, control.runId, agent, index).transcriptPath, `${JSON.stringify({ recordType: "message", role: "assistant", text: lines })}\n`);
+			}
+			const longLines = (prefix: string) => Array.from({ length: 60 }, (_, i) => `${prefix} ${i}`).join("\n");
+			registerLivePromptAudit(control, 0, longLines("audit line"), `${longLines("audit line")}\n\n---\n${longLines("runtime line")}`);
+			registerLivePromptAudit(control, 1, longLines("second audit line"), longLines("second audit line"));
+			const component = new SubagentFleetComponent(
+				{ terminal: { rows: 28, columns: 100 }, requestRender() {} } as never,
+				theme as never,
+				state,
+				() => {},
+				{ refreshMs: 60_000, markdownTheme },
+			);
+			try {
+				const opening = component.render(100);
+				assert.ok(opening.some((line) => line.includes("worker line 199")), "normal output follows the bottom before Prompt Audit");
+				component.handleInput("p");
+				const auditFrame = component.render(100);
+				assert.ok(auditFrame.some((line) => line.includes("audit line 0")), "Prompt Audit opens at the top");
+				assert.ok(!auditFrame.some((line) => line.includes("audit line 59")));
+				// Scroll away from the top first: staying at the top would make the transition below
+				// indistinguishable from preserving the existing offset.
+				for (let i = 0; i < 20; i++) component.handleInput("J");
+				const scrolledAudit = component.render(100);
+				assert.ok(!scrolledAudit.some((line) => line.includes("audit line 0")), "scrolled away from the top before the view change");
+				component.handleInput("2");
+				const runtimeFrame = component.render(100);
+				assert.ok(runtimeFrame.some((line) => line.includes("runtime line 0")), "view changes reset to the top");
+				assert.ok(!runtimeFrame.some((line) => line.includes("runtime line 59")));
+				component.handleInput("1");
+				component.render(100);
+				for (let i = 0; i < 20; i++) component.handleInput("J");
+				const scrolledForChild = component.render(100);
+				assert.ok(!scrolledForChild.some((line) => line.includes("audit line 0")), "scrolled away from the top before the child change");
+				component.handleInput("j");
+				const secondFrame = component.render(100);
+				assert.ok(secondFrame.some((line) => line.includes("second audit line 0")), "child changes reset to the top");
+				assert.ok(!secondFrame.some((line) => line.includes("second audit line 59")));
+				component.handleInput("\x1b");
+				const exited = component.render(100);
+				assert.ok(exited.some((line) => line.includes("reviewer line 199")), "exiting Prompt Audit resumes normal output bottom follow");
+				assert.ok(!exited.some((line) => line.includes("reviewer line 0")));
 			} finally {
 				component.dispose();
 			}

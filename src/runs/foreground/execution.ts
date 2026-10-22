@@ -108,6 +108,7 @@ import {
 import { buildInProcessChildLaunch, createReportedChildSessionInput } from "../shared/child-launch.ts";
 import { childSessionFactory, childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent } from "../shared/child-session.ts";
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
+import { clearProviderRetry, observeProviderDiagnostics, snapshotProviderDiagnostics } from "../../shared/provider-diagnostics.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
@@ -241,6 +242,7 @@ function snapshotProgress(progress: AgentProgress): AgentProgress {
 		...progress,
 		task: PROMPT_REDACTED,
 		skills: progress.skills ? [...progress.skills] : undefined,
+		providerDiagnostics: snapshotProviderDiagnostics(progress.providerDiagnostics),
 		recentTools: boundStreamedRecentTools(progress.recentTools),
 		recentOutput: boundStreamedRecentOutput(progress.recentOutput),
 	};
@@ -252,6 +254,7 @@ function snapshotResult(result: SingleResult, progress: AgentProgress): SingleRe
 		task: PROMPT_REDACTED,
 		messages: result.outputMode === "file-only" && result.savedOutputPath ? undefined : result.messages ? [...result.messages] : undefined,
 		usage: { ...result.usage },
+		providerDiagnostics: snapshotProviderDiagnostics(result.providerDiagnostics),
 		skills: result.skills ? [...result.skills] : undefined,
 		controlEvents: result.controlEvents ? result.controlEvents.map((event) => ({ ...event })) : undefined,
 		progress,
@@ -276,6 +279,7 @@ function snapshotStreamResult(result: SingleResult, progress: AgentProgress): Si
 }
 
 interface StructuredDelegationProgressState {
+	providerDiagnostics?: AgentProgress["providerDiagnostics"];
 	currentTool?: string;
 	currentToolArgs?: string;
 	recentOutput: string[];
@@ -289,6 +293,7 @@ interface StructuredDelegationProgressState {
 
 function captureStructuredDelegationProgressState(progress: AgentProgress, result: SingleResult): StructuredDelegationProgressState {
 	return {
+		providerDiagnostics: progress.providerDiagnostics,
 		currentTool: progress.currentTool,
 		currentToolArgs: progress.currentToolArgs,
 		recentOutput: [...progress.recentOutput],
@@ -306,7 +311,9 @@ function structuredDelegationProgressChanged(
 	progress: AgentProgress,
 	result: SingleResult,
 ): boolean {
-	if (previous.currentTool !== progress.currentTool
+	// Observations replace internal diagnostics; no transcript walk or serialization on heartbeats.
+	if (previous.providerDiagnostics !== progress.providerDiagnostics
+		|| previous.currentTool !== progress.currentTool
 		|| previous.currentToolArgs !== progress.currentToolArgs
 		|| previous.activityState !== progress.activityState
 		|| previous.model !== (progress.model ?? result.model)
@@ -357,6 +364,7 @@ async function runSingleAttempt(
 		orcaProgressTab?: OrcaProgressTab;
 		launchWarnings: { emitted: boolean };
 		verifyModel: boolean;
+		providerDiagnostics?: SingleResult["providerDiagnostics"];
 	},
 ): Promise<SingleResult> {
 	const effectiveThinking = options.thinkingOverride ?? agent.thinking;
@@ -470,6 +478,7 @@ async function runSingleAttempt(
 		exitCode: 0,
 		outputState: "absent",
 		messages: [],
+		providerDiagnostics: shared.providerDiagnostics,
 		usage: emptyUsage(),
 		model: modelArg,
 		...(resolvedThinking ? { thinking: resolvedThinking } : {}),
@@ -500,6 +509,7 @@ async function runSingleAttempt(
 	let cacheWriteUsageComplete = true;
 
 	const progress: AgentProgress = {
+		providerDiagnostics: result.providerDiagnostics,
 		index: options.index ?? 0,
 		agent: agent.name,
 		...(childSessionName ? { sessionName: childSessionName } : {}),
@@ -1052,6 +1062,13 @@ async function runSingleAttempt(
 			}
 
 			const now = Date.now();
+			const providerDiagnostics = observeProviderDiagnostics(result.providerDiagnostics, evt, now);
+			if (providerDiagnostics !== result.providerDiagnostics) {
+				result.providerDiagnostics = providerDiagnostics;
+				progress.providerDiagnostics = providerDiagnostics;
+				// message_end already emits synchronously below; retry-only transitions need their own update.
+				if (evt.type !== "message_end") fireUpdate();
+			}
 			progress.durationMs = now - startTime;
 			progress.lastActivityAt = now;
 			updateActivityState(now);
@@ -1458,6 +1475,8 @@ async function runSingleAttempt(
 		})();
 	});
 	result.exitCode = exitCode;
+	result.providerDiagnostics = clearProviderRetry(result.providerDiagnostics);
+	progress.providerDiagnostics = result.providerDiagnostics;
 	if (afterCompactionSettlement) {
 		(result as AbortRecoverySingleResult)[AFTER_COMPACTION_SETTLEMENT] = true;
 	}
@@ -1928,6 +1947,7 @@ async function runSyncCompletionInner(
 			orcaProgressTab,
 			launchWarnings,
 			verifyModel,
+			providerDiagnostics: lastResult?.providerDiagnostics,
 		});
 		lastResult = attemptResult;
 		sumUsage(aggregateUsage, attemptResult.usage);

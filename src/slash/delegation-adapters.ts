@@ -1,4 +1,5 @@
 import {
+	type SubagentDelegationProviderDiagnostics,
 	type SubagentDelegationRequest,
 	type SubagentDelegationResponse,
 	type SubagentDelegationStatus,
@@ -9,6 +10,7 @@ import {
 } from "../api/delegation.ts";
 import type { AcceptanceInput, AgentContract, AgentProgress, EffectsProjection, ExecutionProjection, IntercomBridgeConfig, JsonSchemaObject, ReviewProjection, ToolBudgetConfig, Usage } from "../shared/types.ts";
 import { cloneJsonWithinByteLimit } from "./delegation-json.ts";
+import { clearProviderRetry, snapshotProviderDiagnostics } from "../shared/provider-diagnostics.ts";
 
 export interface PromptTemplateDelegationRequest {
 	requestId: string;
@@ -94,6 +96,7 @@ export interface PromptTemplateBridgeResult {
 			review?: ReviewProjection;
 			effects?: EffectsProjection;
 			usage?: Usage;
+			providerDiagnostics?: SubagentDelegationProviderDiagnostics;
 			progressSummary?: { toolCount?: number; durationMs?: number; tokens?: number };
 			skillsWarning?: string;
 			outputSaveError?: string;
@@ -115,6 +118,7 @@ export interface PromptTemplateBridgeResult {
 			cacheRead?: number;
 			cacheWrite?: number;
 			turnCount?: number;
+			providerDiagnostics?: SubagentDelegationProviderDiagnostics;
 		}>;
 	};
 }
@@ -349,6 +353,9 @@ export function toSubagentDelegationUpdate(
 		...(typeof legacy.durationMs === "number" ? { durationMs: legacy.durationMs } : {}),
 		...(typeof legacy.tokens === "number" ? { tokens: legacy.tokens } : {}),
 		...(legacy.usage ? { usage: legacy.usage } : {}),
+		...(result.details?.progress?.[0]?.providerDiagnostics ? {
+			providerDiagnostics: snapshotProviderDiagnostics(result.details.progress[0].providerDiagnostics),
+		} : {}),
 	};
 }
 
@@ -421,6 +428,9 @@ export function toSubagentDelegationResponse(
 		...(typeof child?.exitCode === "number" ? { exitCode: child.exitCode } : {}),
 		...(childLaunchContractDigest ? { launchContractDigest: childLaunchContractDigest } : {}),
 		...(projectedResult ? { result: projectedResult } : {}),
+		...(child?.providerDiagnostics ? {
+			providerDiagnostics: snapshotProviderDiagnostics(clearProviderRetry(child.providerDiagnostics)),
+		} : {}),
 		...(usage ? {
 			usage: {
 				input: usage.input,

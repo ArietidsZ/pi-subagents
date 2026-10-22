@@ -8,7 +8,7 @@ import { handleManagementAction } from "../../src/agents/agent-management.ts";
 import { serializeAgent } from "../../src/agents/agent-serializer.ts";
 import { parseChain, serializeChain } from "../../src/agents/chain-serializer.ts";
 import { discoverAgents, discoverAgentsAll, inspectAgentDefinitionDirectory, type AgentConfig } from "../../src/agents/agents.ts";
-import { parseFrontmatter } from "../../src/agents/frontmatter.ts";
+import { parseFrontmatter, parseFrontmatterList } from "../../src/agents/frontmatter.ts";
 import { buildInProcessChildLaunch } from "../../src/runs/shared/child-launch.ts";
 import { applyThinkingSuffix } from "../../src/runs/shared/child-tool-plan.ts";
 import { THINKING_LEVELS } from "../../src/shared/model-info.ts";
@@ -273,6 +273,33 @@ body`);
 
 		assert.equal(afterIndented.frontmatter.description, "normal\n  code\n\nnext");
 		assert.equal(beforeIndented.frontmatter.description, "normal\n\n  code\nnext");
+	});
+});
+
+describe("frontmatter comments", () => {
+	const toolsOf = (frontmatter: string) => parseFrontmatterList(parseFrontmatter(`---\n${frontmatter}\nname: worker\n---\nbody`).frontmatter.tools);
+
+	it("ignores YAML comments in tool lists", () => {
+		assert.deepEqual(toolsOf("tools:\n  - read\n  # note\n  - bash"), ["read", "bash"]);
+		assert.deepEqual(toolsOf("tools:\n  - read\n# note\n  - bash"), ["read", "bash"]);
+		assert.deepEqual(toolsOf("tools:\n  - read # why\n  - bash"), ["read", "bash"]);
+		assert.deepEqual(toolsOf("tools:\n  - read\n  # note, more\n  - bash"), ["read", "bash"]);
+	});
+
+	it("keeps # inside quoted list items and block scalars", () => {
+		assert.deepEqual(toolsOf('tools:\n  - "a # b"\n  - bash'), ['"a # b"', "bash"]);
+		assert.deepEqual(parseFrontmatterList(parseFrontmatter('---\ndefaultReads: "notes #1.md"\n---\nbody').frontmatter.defaultReads), ["notes #1.md"]);
+		const parsed = parseFrontmatter(`---
+description: |
+  first
+  # kept
+notes: >
+  one
+  # two
+---
+body`);
+		assert.equal(parsed.frontmatter.description, "first\n# kept");
+		assert.equal(parsed.frontmatter.notes, "one # two");
 	});
 });
 

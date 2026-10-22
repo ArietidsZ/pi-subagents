@@ -258,6 +258,54 @@ describe("public subagent delegation contract", () => {
 		bridge.dispose();
 	});
 
+	it("delivers diagnostics-only replacement updates and clears active retry from terminal responses", async () => {
+		const events = new FakeEvents();
+		const updates: SubagentDelegationUpdate[] = [];
+		events.on(SUBAGENT_DELEGATION_UPDATE_EVENT, (payload) => updates.push(payload as SubagentDelegationUpdate));
+		const lastError = { kind: "rate_limited" as const, message: "Assistant request was rate limited.", at: 100 };
+		const retry = { phase: "backoff" as const, attempt: 1, maxAttempts: 3, delayMs: 1000, scheduledAt: 110 };
+		const history = { errorCount: 1, lastError };
+		const bridge = registerPromptTemplateDelegationBridge({
+			events,
+			getContext: () => ({ cwd: "/repo" }),
+			execute: async () => { throw new Error("legacy executor must remain separate"); },
+			executeStructured: async (_id, _params, _signal, _ctx, onUpdate) => {
+				const send = (providerDiagnostics?: SubagentDelegationUpdate["providerDiagnostics"]) => onUpdate({ details: {
+					progress: [{ agent: "reviewer", tokens: 0, providerDiagnostics }],
+				} });
+				send();
+				send(history);
+				send({ ...history, lastError: { ...lastError } }); // equal copied snapshot is a heartbeat
+				send({ ...history, retry });
+				send({ ...history, retry: { ...retry, phase: "in_flight" } });
+				send({ ...history, errorCount: 2 });
+				// Mutating an internal adapter input must not mutate prior public snapshots.
+				lastError.at = 999;
+				retry.delayMs = 999;
+				return { details: { results: [{ agent: "reviewer", exitCode: 0, finalOutput: "done", providerDiagnostics: { ...history, errorCount: 2, retry } }] } };
+			},
+		});
+		try {
+			const responsePromise = once(events, SUBAGENT_DELEGATION_RESPONSE_EVENT);
+			events.emit(SUBAGENT_DELEGATION_REQUEST_EVENT, { ...request, result: { kind: "text" as const } });
+			const response = await responsePromise as SubagentDelegationResponse;
+			assert.equal(updates.length, 5);
+			assert.equal(updates[0]?.providerDiagnostics, undefined);
+			assert.equal(updates[1]?.providerDiagnostics?.lastError?.at, 100);
+			assert.equal(updates[2]?.providerDiagnostics?.retry?.delayMs, 1000);
+			assert.equal(updates[2]?.providerDiagnostics?.retry?.phase, "backoff");
+			assert.equal(updates[3]?.providerDiagnostics?.retry?.phase, "in_flight");
+			assert.equal(updates[4]?.providerDiagnostics?.retry, undefined);
+			assert.equal(updates[4]?.providerDiagnostics?.errorCount, 2);
+			assert.equal(response.status, "completed");
+			if (response.status === "invalid_request") assert.fail("expected terminal response");
+			assert.equal(response.providerDiagnostics?.errorCount, 2);
+			assert.equal(response.providerDiagnostics?.retry, undefined);
+		} finally {
+			bridge.dispose();
+		}
+	});
+
 	it("suppresses unchanged structured delegation heartbeat snapshots", async () => {
 		const events = new FakeEvents();
 		const updates: SubagentDelegationUpdate[] = [];

@@ -2,7 +2,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { getMarkdownTheme, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type MarkdownTheme, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { fleetContains, fleetLayout, type FleetLayout } from "./fleet-layout.ts";
+import { FleetViewport } from "./fleet-viewport.ts";
 import { snapshotExternalRuns, type ExternalRun } from "../api/external-runs.ts";
 import { getArtifactPaths, getArtifactsDir } from "../shared/artifacts.ts";
 import { formatDuration, formatModelThinking, formatTokens, formatTokenUsage, shortenPath } from "../shared/formatters.ts";
@@ -809,11 +811,8 @@ export class SubagentFleetComponent implements Component {
 	private snapshot: FleetSnapshot = { items: [] };
 	private selected = 0;
 	private selectedKey: string | undefined;
-	private detailScroll = 0;
-	private detailAutoFollow = true;
-	private detailLineCount = 0;
-	private detailViewportHeight = 8;
-	private bodyHeight = 8;
+	private readonly viewport: FleetViewport;
+	private renderedLayout: FleetLayout | undefined;
 	private expandedTools = false;
 	private promptAuditOpen = false;
 	private promptAuditView: PromptAuditView = "authored";
@@ -843,6 +842,7 @@ export class SubagentFleetComponent implements Component {
 		options: FleetViewOptions = {},
 	) {
 		this.tui = tui;
+		this.viewport = new FleetViewport(() => this.tui.requestRender());
 		this.theme = theme;
 		this.markdownTheme = options.markdownTheme ?? getMarkdownTheme();
 		this.state = state;
@@ -889,10 +889,14 @@ export class SubagentFleetComponent implements Component {
 	}
 
 	private moveSelection(delta: number): void {
-		if (this.snapshot.items.length === 0) return;
-		this.selected = Math.max(0, Math.min(this.snapshot.items.length - 1, this.selected + delta));
+		this.selectItem(Math.max(0, Math.min(this.snapshot.items.length - 1, this.selected + delta)));
+	}
+
+	private selectItem(index: number): void {
+		if (!this.snapshot.items[index]) return;
+		this.selected = index;
 		this.selectedKey = this.snapshot.items[this.selected]?.key;
-		this.detailAutoFollow = true;
+		this.viewport.follow();
 		this.resetActionInput();
 		this.tui.requestRender();
 	}
@@ -928,8 +932,7 @@ export class SubagentFleetComponent implements Component {
 		if (!target) return;
 		this.selected = this.snapshot.items.findIndex((item) => item.key === target.key);
 		this.selectedKey = target.key;
-		this.detailScroll = 0;
-		this.detailAutoFollow = false;
+		this.viewport.resetTop();
 		this.tui.requestRender();
 	}
 
@@ -1008,8 +1011,7 @@ export class SubagentFleetComponent implements Component {
 	private setActionNotice(result: FleetActionResult): void {
 		this.actionNotice = result;
 		this.resetActionInput();
-		this.detailAutoFollow = false;
-		this.detailScroll = 0;
+		this.viewport.resetTop();
 		this.refresh();
 		this.tui.requestRender();
 	}
@@ -1029,10 +1031,34 @@ export class SubagentFleetComponent implements Component {
 	}
 
 	private scrollDetail(delta: number): void {
-		const maxScroll = Math.max(0, this.detailLineCount - this.detailViewportHeight);
-		this.detailScroll = Math.max(0, Math.min(maxScroll, this.detailScroll + delta));
-		this.detailAutoFollow = this.detailScroll >= maxScroll;
-		this.tui.requestRender();
+		this.viewport.scroll.scrollBy(delta);
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		// Block pointer fallback as well as inspector actions while a text/confirmation modal owns input.
+		if (this.steerDraft !== undefined || this.redoGuidanceDraft !== undefined || this.stopConfirming || this.actionBusy) {
+			return { handled: true, render: false };
+		}
+		const layout = this.renderedLayout;
+		if (!layout || layout.width !== event.width || layout.rows !== (this.tui.terminal?.rows ?? 32)) {
+			// Never use hit regions from a different size; wheel must not escape to the transcript.
+			return event.type === "wheel" ? { handled: true, render: false } : undefined;
+		}
+		if (event.type === "wheel" && fleetContains(layout.output, event.x, event.y)) {
+			this.scrollDetail(event.wheelDelta ?? 0);
+			return { handled: true, render: false };
+		}
+		if (this.promptAuditOpen) return { handled: true, render: false };
+		if (event.type === "click" && event.button === "left" && !event.shift && !event.alt && !event.ctrl
+			&& fleetContains(layout.roster, event.x, event.y)) {
+			const key = layout.rosterKeys[event.y - layout.roster.y];
+			const index = key === undefined ? -1 : this.snapshot.items.findIndex((item) => item.key === key);
+			if (index < 0) return undefined;
+			this.selectItem(index);
+			return { handled: true, render: false };
+		}
+		// Unowned wheel inside the overlay would otherwise scroll the transcript behind it.
+		return event.type === "wheel" ? { handled: true, render: false } : undefined;
 	}
 
 	handleInput(data: string): void {
@@ -1070,7 +1096,7 @@ export class SubagentFleetComponent implements Component {
 		if (this.promptAuditOpen) {
 			if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
 				this.promptAuditOpen = false;
-				this.detailAutoFollow = true;
+				this.viewport.follow();
 				this.tui.requestRender();
 				return;
 			}
@@ -1078,7 +1104,7 @@ export class SubagentFleetComponent implements Component {
 			if (data === "k") return this.movePromptSelection(-1);
 			if (data === "1" || data === "2" || data === "3") {
 				this.promptAuditView = data === "1" ? "authored" : data === "2" ? "runtime" : "effective";
-				this.detailScroll = 0;
+				this.viewport.resetTop();
 				this.tui.requestRender();
 				return;
 			}
@@ -1090,8 +1116,7 @@ export class SubagentFleetComponent implements Component {
 				else {
 					this.actionNotice = undefined;
 					this.redoGuidanceDraft = "";
-					this.detailAutoFollow = false;
-					this.detailScroll = 0;
+					this.viewport.resetTop();
 					this.tui.requestRender();
 				}
 				return;
@@ -1108,8 +1133,8 @@ export class SubagentFleetComponent implements Component {
 			}
 			if (matchesFleetAction(data, this.keybindings, "scrollUp")) return this.scrollDetail(-1);
 			if (matchesFleetAction(data, this.keybindings, "scrollDown")) return this.scrollDetail(1);
-			if (matchesFleetAction(data, this.keybindings, "pageUp")) return this.scrollDetail(-this.detailViewportHeight);
-			if (matchesFleetAction(data, this.keybindings, "pageDown")) return this.scrollDetail(this.detailViewportHeight);
+			if (matchesFleetAction(data, this.keybindings, "pageUp")) return this.scrollDetail(-this.viewport.scroll.viewportHeight);
+			if (matchesFleetAction(data, this.keybindings, "pageDown")) return this.scrollDetail(this.viewport.scroll.viewportHeight);
 			return;
 		}
 		if (this.steerDraft !== undefined) {
@@ -1176,8 +1201,8 @@ export class SubagentFleetComponent implements Component {
 		if (matchesFleetAction(data, this.keybindings, "selectDown")) return this.moveSelection(1);
 		if (matchesFleetAction(data, this.keybindings, "selectFirst")) return this.moveSelection(-this.snapshot.items.length);
 		if (matchesFleetAction(data, this.keybindings, "selectLast")) return this.moveSelection(this.snapshot.items.length);
-		if (matchesFleetAction(data, this.keybindings, "pageUp")) return this.scrollDetail(-this.detailViewportHeight);
-		if (matchesFleetAction(data, this.keybindings, "pageDown")) return this.scrollDetail(this.detailViewportHeight);
+		if (matchesFleetAction(data, this.keybindings, "pageUp")) return this.scrollDetail(-this.viewport.scroll.viewportHeight);
+		if (matchesFleetAction(data, this.keybindings, "pageDown")) return this.scrollDetail(this.viewport.scroll.viewportHeight);
 		if (matchesFleetAction(data, this.keybindings, "refresh")) {
 			this.transcriptCache = undefined;
 			this.refresh();
@@ -1189,8 +1214,7 @@ export class SubagentFleetComponent implements Component {
 			else {
 				this.promptAuditOpen = true;
 				this.promptAuditView = "authored";
-				this.detailScroll = 0;
-				this.detailAutoFollow = false;
+				this.viewport.resetTop();
 				this.actionNotice = undefined;
 				this.tui.requestRender();
 			}
@@ -1202,8 +1226,7 @@ export class SubagentFleetComponent implements Component {
 			else {
 				this.actionNotice = undefined;
 				this.steerDraft = "";
-				this.detailAutoFollow = false;
-				this.detailScroll = 0;
+				this.viewport.resetTop();
 				this.tui.requestRender();
 			}
 			return;
@@ -1214,8 +1237,7 @@ export class SubagentFleetComponent implements Component {
 			else {
 				this.actionNotice = undefined;
 				this.stopConfirming = true;
-				this.detailAutoFollow = false;
-				this.detailScroll = 0;
+				this.viewport.resetTop();
 				this.tui.requestRender();
 			}
 			return;
@@ -1232,17 +1254,17 @@ export class SubagentFleetComponent implements Component {
 		}
 	}
 
-	private rosterLines(width: number): string[] {
+	private rosterLines(layout: FleetLayout): string[] {
 		if (this.snapshot.items.length === 0) return [this.theme.fg("dim", "No tracked children")];
-		const start = Math.max(0, Math.min(this.selected - this.bodyHeight + 1, Math.max(0, this.snapshot.items.length - this.bodyHeight)));
-		return this.snapshot.items.slice(start, start + this.bodyHeight).map((item, offset) => {
-			const index = start + offset;
+		return layout.rosterKeys.map((_key, offset) => {
+			const index = layout.rosterStart + offset;
+			const item = this.snapshot.items[index]!;
 			const marker = index === this.selected ? this.theme.fg("accent", "›") : " ";
 			const context = item.kind === "async" ? contextModeBadge(this.theme, item.step?.context ?? item.run.context) : item.kind === "foreground-recent" ? contextModeBadge(this.theme, item.child.context) : "";
 			const agent = index === this.selected ? this.theme.bold(item.agent) : item.agent;
 			const identity = item.runId.slice(0, 8);
 			const left = `${marker} ${statusGlyph(item, this.theme)} ${agent}${context} ${this.theme.fg("dim", `· ${identity}`)}`;
-			return rightAligned(left, this.theme.fg("dim", item.state), width);
+			return rightAligned(left, this.theme.fg("dim", item.state), layout.roster.width);
 		});
 	}
 
@@ -1342,23 +1364,20 @@ export class SubagentFleetComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		if (width < 36) return [truncateToWidth("Subagent fleet needs at least 36 columns. Esc closes.", width)];
+		const layout = fleetLayout(width, this.tui.terminal?.rows ?? 32, this.selected, this.snapshot.items);
+		this.renderedLayout = layout;
+		if (!layout) return [truncateToWidth("Subagent fleet needs at least 36 columns. Esc closes.", width)];
 		const innerWidth = width - 2;
-		const rows = this.tui.terminal?.rows ?? 32;
-		this.bodyHeight = Math.max(2, Math.floor(rows * 0.85) - 6);
-		const rosterWidth = Math.max(22, Math.min(46, Math.floor((innerWidth - 1) * 0.38)));
-		const detailWidth = Math.max(1, innerWidth - rosterWidth - 1);
-		const roster = this.rosterLines(rosterWidth);
+		const { bodyHeight } = layout;
+		const rosterWidth = layout.roster.width;
+		const detailWidth = layout.output.width;
+		const roster = this.rosterLines(layout);
 		const detail = this.wrappedDetail(detailWidth);
-		const detailHeader = detail.header.slice(0, Math.max(0, this.bodyHeight - 1));
-		this.detailViewportHeight = Math.max(1, this.bodyHeight - detailHeader.length);
-		this.detailLineCount = detail.body.length;
-		const maxDetailScroll = Math.max(0, detail.body.length - this.detailViewportHeight);
-		if (this.detailAutoFollow) this.detailScroll = maxDetailScroll;
-		else if (this.detailScroll > maxDetailScroll) this.detailScroll = maxDetailScroll;
+		const detailHeader = detail.header.slice(0, Math.max(0, bodyHeight - 1));
+		const outputBodyHeight = bodyHeight - detailHeader.length;
 		const visibleDetails = [
 			...detailHeader,
-			...detail.body.slice(this.detailScroll, this.detailScroll + this.detailViewportHeight),
+			...this.viewport.render(detail.body, detailWidth, outputBodyHeight),
 		];
 		const lines = [this.theme.fg("border", `╭${"─".repeat(innerWidth)}╮`)];
 		const selected = this.snapshot.items[this.selected];
@@ -1370,7 +1389,7 @@ export class SubagentFleetComponent implements Component {
 			: this.theme.fg("dim", "no children ");
 		lines.push(this.theme.fg("border", "│") + rightAligned(title, selectedStatus, innerWidth) + this.theme.fg("border", "│"));
 		lines.push(this.theme.fg("border", `├${"─".repeat(rosterWidth)}┬${"─".repeat(detailWidth)}┤`));
-		for (let index = 0; index < this.bodyHeight; index++) {
+		for (let index = 0; index < bodyHeight; index++) {
 			lines.push(
 				this.theme.fg("border", "│")
 				+ fit(roster[index] ?? "", rosterWidth)
@@ -1392,6 +1411,7 @@ export class SubagentFleetComponent implements Component {
 	}
 
 	invalidate(): void {
+		this.renderedLayout = undefined;
 		this.transcriptCache = undefined;
 		this.refresh();
 	}

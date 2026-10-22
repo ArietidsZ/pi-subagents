@@ -10,6 +10,7 @@ import {
 	type SubagentDelegationUpdate,
 } from "../api/delegation.ts";
 import { parseSubagentDelegationRequest } from "./delegation-request.ts";
+import { sameProviderDiagnostics } from "../shared/provider-diagnostics.ts";
 import {
 	parsePromptTemplateRequest,
 	toDelegationUpdate,
@@ -110,7 +111,8 @@ function sameStructuredDelegationUpdateProgress(left: SubagentDelegationUpdate, 
 		&& left.model === right.model
 		&& left.toolCount === right.toolCount
 		&& left.tokens === right.tokens
-		&& sameUpdateUsage(left.usage, right.usage);
+		&& sameUpdateUsage(left.usage, right.usage)
+		&& sameProviderDiagnostics(left.providerDiagnostics, right.providerDiagnostics);
 }
 
 export function registerPromptTemplateDelegationBridge<Ctx extends { cwd?: string }>(

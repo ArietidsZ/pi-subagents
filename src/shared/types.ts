@@ -5,6 +5,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
+import type { SubagentDelegationProviderDiagnostics } from "../api/delegation.ts";
 import type { AgentConfig } from "../agents/agents.ts";
 import type { FSWatcher } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -967,6 +968,7 @@ export interface ChildWatchdogProgress {
 }
 
 export interface AgentProgress {
+	providerDiagnostics?: SubagentDelegationProviderDiagnostics;
 	index: number;
 	agent: string;
 	/** Human-readable display name for the child's session, when derived at launch. */
@@ -1305,6 +1307,7 @@ export interface SingleResult {
 	toolBudget?: ToolBudgetState;
 	toolBudgetBlocked?: boolean;
 	messages?: Message[];
+	providerDiagnostics?: SubagentDelegationProviderDiagnostics;
 	usage: Usage;
 	model?: string;
 	/** Authoritative before/after Git evidence captured by a pane-native remote machine. */
