@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Skill discovery no longer fails with `ENOTDIR` when a `settings.json` `packages` entry names a single extension file. Thanks to [@tara-marchand](https://github.com/tara-marchand) for #3011.
+
 ## [0.81.0] - 2026-10-22
 
 ### Highlights
