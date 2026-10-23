@@ -35,8 +35,13 @@ function sshEnvCommand(session: string | undefined, command: string): string { c
 export function runHerdrRemoteCommand(machine: HerdrMachineReference, command: string, options: { sshBin?: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number } = {}) { return spawnSync(options.sshBin ?? "ssh", [...herdrSshArgs(options.env), machine.target, command], { encoding: "utf8", env: hardenedSshEnv(options.env), timeout: options.timeout ?? 15_000, maxBuffer: options.maxBuffer ?? MAX_DISCOVERY_BYTES, windowsHide: true }); }
 
 export function runHerdrRemoteCommandAsync(machine: HerdrMachineReference, command: string, options: { sshBin?: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number } = {}): Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }> {
+	return runBoundedCommand(options.sshBin ?? "ssh", [...herdrSshArgs(options.env), machine.target, command], { env: hardenedSshEnv(options.env), timeout: options.timeout, maxBuffer: options.maxBuffer });
+}
+
+/** Spawns one process with bounded output and a SIGTERM-then-SIGKILL timeout; never rejects. */
+export function runBoundedCommand(file: string, args: string[], options: { env: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number }): Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }> {
 	return new Promise((resolve) => {
-		const child = spawn(options.sshBin ?? "ssh", [...herdrSshArgs(options.env), machine.target, command], { env: hardenedSshEnv(options.env), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+		const child = spawn(file, args, { env: options.env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 		const stdout: Buffer[] = [], stderr: Buffer[] = [], maxBuffer = options.maxBuffer ?? MAX_DISCOVERY_BYTES; let stdoutBytes = 0, stderrBytes = 0, error: Error | undefined, settled = false, escalation: NodeJS.Timeout | undefined;
 		const finish = (status: number | null, spawnError = error) => { if (settled) return; settled = true; clearTimeout(timer); if (escalation) clearTimeout(escalation); resolve({ status, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8"), ...(spawnError ? { error: spawnError } : {}) }); };
 		const terminate = () => { child.kill("SIGTERM"); escalation ??= setTimeout(() => { if (!settled) { child.kill("SIGKILL"); finish(child.exitCode ?? null); } }, 1_000); escalation.unref?.(); };

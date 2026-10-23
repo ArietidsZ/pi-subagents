@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { HerdrMachineReference } from "../../shared/types.ts";
+import type { PlacementMachineReference } from "../../shared/types.ts";
 import type { HerdrRunIdentity } from "./herdr-placed-run.ts";
 import { getAgentDir } from "../../shared/utils.ts";
 
@@ -30,10 +30,10 @@ export interface PlacementMachineAccess {
 
 /** Every pane operation a placed native run and its owner need. The connection carries the host's socket forwarding; P is the host's reconnect view of its panes; E is the host's raw pane event. */
 export interface PlacementPaneHost<C extends PlacementSockets = PlacementSockets, P extends object = object, E = unknown> {
-	connect(machine: HerdrMachineReference): Promise<C>;
+	connect(machine: PlacementMachineReference): Promise<C>;
 	sessionOf(connection: C): string | null;
 	/** Create the pane and start the agent in it; call onPane after the pane exists and before the agent starts. */
-	launch(connection: C, machine: HerdrMachineReference, runId: string, runtimeDir: string, request: PlacementLaunchRequest, onPane: (owned: PlacementOwnedPane) => Promise<void>, options?: PlacementStartOptions): Promise<{ owned: PlacementOwnedPane; terminalId: string }>;
+	launch(connection: C, machine: PlacementMachineReference, runId: string, runtimeDir: string, request: PlacementLaunchRequest, onPane: (owned: PlacementOwnedPane) => Promise<void>, options?: PlacementStartOptions): Promise<{ owned: PlacementOwnedPane; terminalId: string }>;
 	prompt(connection: C, identity: HerdrRunIdentity, text: string): Promise<void>;
 	subscribe(connection: C, paneId: string, listener: (event: E) => void, onDisconnect: (error: Error) => void): Promise<() => void>;
 	paneEvent(event: E, fallback: PlacementRunState): { terminalId: unknown; paneId: unknown; state: PlacementRunState } | undefined;

@@ -4,13 +4,14 @@ import * as net from "node:net";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import packageJson from "../../../package.json" with { type: "json" };
-import type { HerdrMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
+import type { HerdrRemoteGitStatus, PlacementMachineReference } from "../../shared/types.ts";
 import type { ChildSession, ChildSessionEvent, ChildSessionFactory, ChildSessionLaunch } from "./child-session.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import { herdrPaneHost, HerdrPlacedRunOwner } from "./herdr-pane-host.ts";
 import { encodeHerdrPiFrame, HERDR_PI_MODE_ENV, HERDR_PI_PROTOCOL, HERDR_PI_RUN_ENV, HERDR_PI_RUNTIME_DIR_ENV, HerdrPiFrameDecoder, validateHerdrPiRunId, type HerdrPiFrame } from "./herdr-pi-protocol.ts";
 import { discoverPlacedBridgeManifest, type PlacedBridgeManifest, type PlacedRunOwner } from "./placed-run-owner.ts";
 import type { PlacementBridgeIdentity, PlacementPaneHost, PlacementReconnectCheck, PlacementRunState, PlacementSockets } from "./placement-host.ts";
+import { RexPlacedRunOwner } from "./rex-pane-host.ts";
 
 export interface HerdrRunIdentity { runId: string; machineId: string; target: string; session: string | null; workspaceId: string; tabId: string; paneId: string; terminalId: string; agentName: string; nativeSessionId: string; cwd: string; runtimeDir: string }
 export interface HerdrRunSnapshot { connection: "connected" | "unknown" | "closed"; state: PlacementRunState; identity?: HerdrRunIdentity; revision: number }
@@ -101,12 +102,12 @@ export class HerdrPiSession<C extends PlacementSockets = PlacementSockets> imple
 	prompt(text: string) { return this.#operation("prompt", text); } steer(text: string) { return this.#operation("steer", text); } followUp(text: string) { return this.#operation("follow-up", text); } async abort() { this.#aborted = true; await this.#operation("abort"); }
 	async dispose() { if (this.#disposed) return; this.#disposed = true; if (this.#replyTimer) clearInterval(this.#replyTimer); this.bridge.close(); await this.bridgeForward.close(); await this.owner.cleanup(this.#aborted); this.#snapshot = { ...this.#snapshot, connection: "closed" }; }
 	get messages() { return this.#messages; } get sessionFile() { return undefined; } get sessionId() { return this.identity.nativeSessionId; } get modelId() { return this.model; }
-	get machineEvidence() { return { machineId: this.identity.machineId, ...(this.#initialGit ? { initial: this.#initialGit } : {}), ...(this.#finalGit ? { final: this.#finalGit } : {}) }; }
+	get machineEvidence() { return { provider: this.owner.machine.provider, machineId: this.identity.machineId, ...(this.#initialGit ? { initial: this.#initialGit } : {}), ...(this.#finalGit ? { final: this.#finalGit } : {}) }; }
 	get placementSnapshot() { return this.owner.snapshot; }
 }
 
-export async function reconnectHerdrPiSession<C extends PlacementSockets>(session: HerdrPiSession<C>, launch: ChildSessionLaunch, dependencies: { host?: PlacementPaneHost<C>; connect?: (machine: HerdrMachineReference) => Promise<C>; discoverManifest?: (runId: string, runtimeDir: string) => Promise<PlacedBridgeManifest>; createBridge?: (socketPath: string, runId: string) => BridgeChannel } = {}): Promise<void> {
-	const host = dependencies.host ?? fallbackPaneHost<C>(), connect = dependencies.connect ?? ((machine: HerdrMachineReference) => host.connect(machine)), discoverManifest = dependencies.discoverManifest ?? ((runId: string, runtimeDir: string) => discoverPlacedBridgeManifest(session.owner.access, runId, runtimeDir)), createBridge = dependencies.createBridge ?? ((socketPath: string, runId: string) => new BridgeChannel(socketPath, runId));
+export async function reconnectHerdrPiSession<C extends PlacementSockets>(session: HerdrPiSession<C>, launch: ChildSessionLaunch, dependencies: { host?: PlacementPaneHost<C>; connect?: (machine: PlacementMachineReference) => Promise<C>; discoverManifest?: (runId: string, runtimeDir: string) => Promise<PlacedBridgeManifest>; createBridge?: (socketPath: string, runId: string) => BridgeChannel } = {}): Promise<void> {
+	const host = dependencies.host ?? fallbackPaneHost<C>(), connect = dependencies.connect ?? ((machine: PlacementMachineReference) => host.connect(machine)), discoverManifest = dependencies.discoverManifest ?? ((runId: string, runtimeDir: string) => discoverPlacedBridgeManifest(session.owner.access, runId, runtimeDir)), createBridge = dependencies.createBridge ?? ((socketPath: string, runId: string) => new BridgeChannel(socketPath, runId));
 	let validated: { connection: C; unsubscribe: () => void; bridgeForward: { socketPath: string; close(): Promise<void> }; bridge: BridgeChannel; candidate: { adopted: boolean; lost?: Error } } | undefined;
 	const result = await boundedHerdrReconnect(session.identity, session.evidenceCursor, async () => {
 		const connection = await connect(launch.machine!); let unsubscribe = () => {}; let bridgeForward: { socketPath: string; close(): Promise<void> } | undefined; let bridge: BridgeChannel | undefined; const generation: { adopted: boolean; lost?: Error } = { adopted: false };
@@ -129,24 +130,39 @@ export async function reconnectHerdrPiSession<C extends PlacementSockets>(sessio
 
 export async function createHerdrPiSession(launch: ChildSessionLaunch): Promise<ChildSession> {
 	if (!launch.machine) throw new Error("Pane-native Pi launch requires a saved machine.");
-	const policy = serializeHerdrPiLaunch(launch); const runId = safeRunId(launch.runtime.runId); const owner = await HerdrPlacedRunOwner.create(launch.machine, runId); const runtimeDir = owner.runtimeDir, connection = owner.connection; let observeHerdr: ((event: unknown) => void) | undefined;
+	if (launch.machine.provider !== "herdr") throw new Error("Herdr pane-native Pi launch requires a Herdr saved machine.");
+	const policy = serializeHerdrPiLaunch(launch); const runId = safeRunId(launch.runtime.runId);
+	return startPlacedPiSession(launch, await HerdrPlacedRunOwner.create(launch.machine, runId), policy, launch.machine.target);
+}
+
+/** `machine: "local"`: the same bridge session, with the Rex pane host and local machine access. */
+export async function createRexPiSession(launch: ChildSessionLaunch): Promise<ChildSession> {
+	if (launch.machine?.provider !== "rex") throw new Error("Rex pane-native Pi launch requires machine 'local'.");
+	const policy = serializeHerdrPiLaunch(launch); const runId = safeRunId(launch.runtime.runId);
+	return startPlacedPiSession(launch, await RexPlacedRunOwner.create(launch.machine, runId), policy, launch.machine.id);
+}
+
+async function startPlacedPiSession<C extends PlacementSockets>(launch: ChildSessionLaunch, owner: PlacedRunOwner<C>, policy: ReturnType<typeof serializeHerdrPiLaunch>, target: string): Promise<ChildSession> {
+	const machine = owner.machine, runId = owner.runId, runtimeDir = owner.runtimeDir, connection = owner.connection; let observeHerdr: ((event: unknown) => void) | undefined;
 	try {
 		let reconnectSession: { reconnect(): Promise<void> } | undefined; const agentName = `pi-${runId.slice(-20)}`;
 		const { owned, terminalId } = await owner.launch({ kind: "pi", name: agentName, args: policy.args, environment: { [HERDR_PI_MODE_ENV]: "1", [HERDR_PI_RUN_ENV]: runId, [HERDR_PI_RUNTIME_DIR_ENV]: runtimeDir } }, () => owner.subscribe((event) => observeHerdr?.(event), () => void reconnectSession?.reconnect()));
 		const manifest = await discoverPlacedBridgeManifest(owner.access, runId, runtimeDir); if (manifest.protocol !== HERDR_PI_PROTOCOL || manifest.packageVersion !== packageJson.version) throw new Error(`Remote pi-subagents bridge version mismatch (remote ${manifest.packageVersion}, local ${packageJson.version}).`);
 		const bridgeForward = await connection.forwardRemoteSocket(manifest.socketPath, "bridge"); const bridge = new BridgeChannel(bridgeForward.socketPath, runId);
 		const ready = await waitForReadyBridgeFrame(bridge, 15_000, "Remote Pi bridge handshake timed out.");
-		if (ready.packageVersion !== packageJson.version || ready.nativeSessionId !== manifest.nativeSessionId || ready.cwd !== launch.machine.cwd) throw new Error("Remote Pi bridge handshake identity mismatch.");
+		if (ready.packageVersion !== packageJson.version || ready.nativeSessionId !== manifest.nativeSessionId || ready.cwd !== machine.cwd) throw new Error("Remote Pi bridge handshake identity mismatch.");
 		const configured = await Promise.race([bridge.configure(policy.resources), bridge.failure]);
 		if (configured.nativeSessionId !== manifest.nativeSessionId || configured.agent !== policy.resources.agent) throw new Error("Remote Pi resource resolution identity mismatch.");
 		if (!Array.isArray(configured.tools) || (policy.resources.toolCeiling && (configured.tools as unknown[]).some((tool) => !policy.resources.toolCeiling!.includes(String(tool))))) throw new Error("Remote Pi active-tool ceiling acknowledgement mismatch.");
 		if (launch.model && configured.model !== launch.model.split(":")[0]) throw new Error(`Remote Pi model '${launch.model}' did not resolve to the requested provider/model.`);
-		const identity: HerdrRunIdentity = { runId, machineId: launch.machine.id, target: launch.machine.target, session: owner.host.sessionOf(connection), workspaceId: owned.workspaceId, tabId: owned.tabId, paneId: owned.paneId, terminalId, agentName, nativeSessionId: manifest.nativeSessionId, cwd: launch.machine.cwd, runtimeDir };
+		const identity: HerdrRunIdentity = { runId, machineId: machine.id, target, session: owner.host.sessionOf(connection), workspaceId: owned.workspaceId, tabId: owned.tabId, paneId: owned.paneId, terminalId, agentName, nativeSessionId: manifest.nativeSessionId, cwd: machine.cwd, runtimeDir };
 		owner.journal(identity);
 		const session = new HerdrPiSession(owner, bridgeForward, bridge, (configured.tools as string[] | undefined), typeof ready.model === "string" ? ready.model : undefined, launch.runtime, ready.initialGit as HerdrRemoteGitStatus | undefined, owner.host); reconnectSession = session; observeHerdr = (event) => session.observeHerdr(event); session.armReconnect(() => reconnectHerdrPiSession(session, launch, { host: session.host })); return session;
 	} catch (error) { await owner.cleanup(); throw error; }
 }
 
-export function createPlacementAwareChildSessionFactory(local: ChildSessionFactory, createRemote: (launch: ChildSessionLaunch) => Promise<ChildSession> = createHerdrPiSession): ChildSessionFactory {
+function createPlacedPiSession(launch: ChildSessionLaunch): Promise<ChildSession> { return launch.machine?.provider === "rex" ? createRexPiSession(launch) : createHerdrPiSession(launch); }
+
+export function createPlacementAwareChildSessionFactory(local: ChildSessionFactory, createRemote: (launch: ChildSessionLaunch) => Promise<ChildSession> = createPlacedPiSession): ChildSessionFactory {
 	const remote = new Set<ChildSession>(); return { async create(launch) { if (!launch.machine) return local.create(launch); serializeHerdrPiLaunch(launch); const child = await createRemote(launch); remote.add(child); return child; }, async dispose() { await Promise.allSettled([...remote].map((child) => child.dispose())); remote.clear(); await local.dispose(); } };
 }

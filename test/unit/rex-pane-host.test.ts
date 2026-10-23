@@ -1,0 +1,78 @@
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { localMachineAccess } from "../../src/runs/shared/local-machine-access.ts";
+import { closeOwnedRexPane, connectRex } from "../../src/runs/shared/rex-pane-host.ts";
+import type { RexMachineReference } from "../../src/shared/types.ts";
+
+// A fake `rex` on disk: it logs its argv and exits with the next scripted code for each command kind.
+const FAKE_REX = `#!/bin/sh
+d="$FAKE_REX_DIR"; printf '%s\\n' "$*" >> "$d/calls"
+case "$*" in
+  *" session inspect "*) key=session;;
+  *" block inspect "*) key=inspect;;
+  *" block close "*) key=close;;
+  *) key=other;;
+esac
+n=$(($(cat "$d/$key.n" 2>/dev/null || echo 0) + 1)); echo "$n" > "$d/$key.n"
+code=$(sed -n "\${n}p" "$d/$key" 2>/dev/null); [ -n "$code" ] || code=$(tail -n 1 "$d/$key" 2>/dev/null); [ -n "$code" ] || code=0
+if [ "$key" = session ] && [ "$code" = 0 ]; then printf '{"session_id":"%s"}' "$FAKE_REX_SESSION"; fi
+[ "$code" = 0 ] || echo "fake rex exit $code" >&2
+exit "$code"
+`;
+const session = "session:fake-1", machine: RexMachineReference = { provider: "rex", id: "local", session, server: "unix:///tmp/fake-rex.sock", cwd: "/tmp" };
+const owned = { workspaceId: session, tabId: "window:w1", paneId: "block:b1" };
+
+describe("Rex pane host exit codes and cleanup", { skip: process.platform === "win32" }, () => {
+	let dir: string, bin: string;
+	const script = (key: string, codes: number[]) => fs.writeFileSync(path.join(dir, key), `${codes.join("\n")}\n`);
+	const calls = () => fs.readFileSync(path.join(dir, "calls"), "utf8").trim().split("\n");
+	const connect = () => connectRex(machine, { bin, access: localMachineAccess({ env: { PATH: "/usr/bin:/bin", FAKE_REX_DIR: dir, FAKE_REX_SESSION: session } }) });
+	beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-rex-")); bin = path.join(dir, "rex"); fs.writeFileSync(bin, FAKE_REX, { mode: 0o755 }); });
+	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+	it("connects only when the server confirms the recorded session, with autostart off and an explicit server", async () => {
+		await connect();
+		assert.deepEqual(calls(), [`--autostart=false -S ${machine.server} session inspect ${session} --json`]);
+		fs.rmSync(path.join(dir, "session.n"));
+		script("session", [3]); await assert.rejects(connect(), /session session:fake-1 no longer exists/u);
+		fs.rmSync(path.join(dir, "session.n"));
+		script("session", [4]); await assert.rejects(connect(), /unreachable/u);
+	});
+
+	it("closes a present block and reports closed only once block inspect exits 3", async () => {
+		const connection = await connect(); script("inspect", [0, 3]); script("close", [0]);
+		await closeOwnedRexPane(connection, owned);
+		assert.deepEqual(calls().slice(1), [
+			`--autostart=false -S ${machine.server} block inspect -s ${session} block:b1`,
+			`--autostart=false -S ${machine.server} block close -s ${session} block:b1`,
+			`--autostart=false -S ${machine.server} block inspect -s ${session} block:b1`,
+		]);
+	});
+
+	it("treats an already-gone block as closed without closing anything", async () => {
+		const connection = await connect(); script("inspect", [3]);
+		await closeOwnedRexPane(connection, owned);
+		assert.equal(calls().some((call) => call.includes("block close")), false);
+	});
+
+	it("refuses to report closed while the block still exists after close", async () => {
+		const connection = await connect(); script("inspect", [0]); script("close", [0]);
+		await assert.rejects(closeOwnedRexPane(connection, owned), /still exists after close/u);
+	});
+
+	it("never treats an unreachable server (exit 4) as a gone block", async () => {
+		const connection = await connect(); script("inspect", [4]);
+		await assert.rejects(closeOwnedRexPane(connection, owned), /unreachable/u);
+		script("inspect", [0, 4]); fs.rmSync(path.join(dir, "inspect.n")); script("close", [0]);
+		await assert.rejects(closeOwnedRexPane(connection, owned), /unreachable/u);
+	});
+
+	it("refuses cleanup of a pane recorded in another Rex session", async () => {
+		const connection = await connect();
+		await assert.rejects(closeOwnedRexPane(connection, { ...owned, workspaceId: "session:other" }), /different Rex session/u);
+		assert.equal(calls().length, 1);
+	});
+});

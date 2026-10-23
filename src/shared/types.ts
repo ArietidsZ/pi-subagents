@@ -1798,6 +1798,18 @@ export interface HerdrMachineReference {
 	cwd: string;
 }
 
+/** `machine: "local"`: a Rex pane in the parent's own Rex session on this machine. `session` is the Rex session id and `server` the Rex server address, both recorded in the parent at resolution time; `cwd` is the local launch directory. */
+export interface RexMachineReference {
+	provider: "rex";
+	id: "local";
+	session: string;
+	server?: string;
+	cwd: string;
+}
+
+/** Where a placed native Pi child runs. */
+export type PlacementMachineReference = HerdrMachineReference | RexMachineReference;
+
 export interface ExternalCliMachineStatus extends HerdrMachineReference {
 	remoteGit?: HerdrRemoteGitStatus;
 }

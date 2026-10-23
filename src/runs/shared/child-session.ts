@@ -20,7 +20,7 @@ import { resolvePackageSubpath } from "../background/runner-aliases.ts";
 import { PI_CODING_AGENT_PACKAGE, resolveHostPiPackageRoot } from "./pi-spawn.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import type { RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
-import type { HerdrMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
+import type { PlacementMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
 
 export interface ChildSessionEvent {
 	type: string;
@@ -56,7 +56,7 @@ export type ChildSessionStorage =
 export interface ChildSessionLaunch {
 	cwd: string;
 	/** Resolved pane-native placement. Local launches omit this field. */
-	machine?: HerdrMachineReference;
+	machine?: PlacementMachineReference;
 	/** The launching session's project trust; undefined keeps Pi's default for hosts without trust. */
 	projectTrusted?: boolean;
 	/** Process-local provider source owned by the invoking foreground parent. */

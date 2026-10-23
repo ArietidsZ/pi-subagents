@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { HerdrMachineReference } from "../../shared/types.ts";
+import type { HerdrMachineReference, PlacementMachineReference } from "../../shared/types.ts";
 import { connectHerdrMachine, sshMachineAccess, type HerdrForwardedConnection, type HerdrRpcClient } from "./herdr-connection.ts";
 import type { HerdrRunIdentity } from "./herdr-placed-run.ts";
 import { HERDR_PI_MODE_ENV, HERDR_PI_RUN_ENV, HERDR_PI_RUNTIME_DIR_ENV } from "./herdr-pi-protocol.ts";
@@ -46,6 +46,7 @@ export async function provisionHerdrPane(client: HerdrRpcClient, cwd: string, ru
 }
 
 function provisionHerdrOwnedPane(connection: HerdrForwardedConnection, machine: HerdrMachineReference, runId: string, runtimeDir: string, environment?: Record<string, string>): Promise<PlacementOwnedPane> { return provisionHerdrPane(connection.client, machine.cwd, runId, runtimeDir, environment, herdrPaneAllocationKey(machine.target, connection.endpoint.session, machine.cwd)); }
+function asHerdrMachine(machine: PlacementMachineReference): HerdrMachineReference { if (machine.provider !== "herdr") throw new Error("The Herdr pane host only places runs on Herdr saved machines."); return machine; }
 
 async function startHerdrAgent(connection: HerdrForwardedConnection, owned: PlacementOwnedPane, kind: PlacementAgentKind, name: string, args: string[], options: PlacementStartOptions = {}): Promise<{ terminalId: string; paneId: string }> {
 	const clock = options.clock ?? { now: () => Date.now(), wait: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) }, deadline = clock.now() + (options.timeoutMs ?? 5_000), pollMs = options.pollMs ?? 50;
@@ -66,9 +67,9 @@ async function closeOwnedHerdrPane(connection: HerdrForwardedConnection, owned: 
 
 /** Herdr pane host: Herdr RPC over the SSH-forwarded Herdr socket. Ownership is the Herdr terminal_id/pane_id pair; run state comes from agent_status. */
 export const herdrPaneHost = {
-	connect(machine) { return connectHerdrMachine(machine); },
+	connect(machine) { return connectHerdrMachine(asHerdrMachine(machine)); },
 	sessionOf(connection) { return connection.endpoint.session; },
-	async launch(connection, machine, runId, runtimeDir, request, onPane, options) { const owned = await provisionHerdrOwnedPane(connection, machine, runId, runtimeDir, request.environment); await onPane(owned); const { terminalId } = await startHerdrAgent(connection, owned, request.kind, request.name, request.args, options); return { owned, terminalId }; },
+	async launch(connection, machine, runId, runtimeDir, request, onPane, options) { const owned = await provisionHerdrOwnedPane(connection, asHerdrMachine(machine), runId, runtimeDir, request.environment); await onPane(owned); const { terminalId } = await startHerdrAgent(connection, owned, request.kind, request.name, request.args, options); return { owned, terminalId }; },
 	async prompt(connection, identity, text) { await connection.client.call("agent.prompt", { target: identity.agentName, text }); },
 	subscribe(connection, paneId, listener, onDisconnect) { return connection.client.subscribe(herdrStatusSubscriptions(paneId), listener, onDisconnect); },
 	paneEvent(event, fallback) { const data = event && typeof event === "object" ? (event as { data?: Record<string, unknown> }).data : undefined; return data ? { terminalId: data.terminal_id, paneId: data.pane_id, state: herdrRunState(data.agent_status, fallback) } : undefined; },
@@ -83,7 +84,7 @@ export function createRemoteRuntimeDir(machine: HerdrMachineReference, runId: st
 export function removeRemoteRuntimeDir(machine: HerdrMachineReference, runtimeDir: string, options: { sshBin?: string; env?: NodeJS.ProcessEnv } = {}): void { removePlacedRuntimeDir(sshMachineAccess(machine, options), runtimeDir); }
 
 /** The placed-run owner bound to Herdr and SSH access, plus the separate provision and start steps the external CLI adapters use. */
-export class HerdrPlacedRunOwner extends PlacedRunOwner<HerdrForwardedConnection> {
+export class HerdrPlacedRunOwner extends PlacedRunOwner<HerdrForwardedConnection, HerdrMachineReference> {
 	private constructor(machine: HerdrMachineReference, runId: string, runtimeDir: string, connection: HerdrForwardedConnection, removeRuntime?: () => void) { super(machine, runId, runtimeDir, connection, herdrPaneHost, sshMachineAccess(machine), removeRuntime); }
 	static async create(machine: HerdrMachineReference, runId: string, beforePane?: (owner: HerdrPlacedRunOwner) => void | Promise<void>): Promise<HerdrPlacedRunOwner> { const runtimeDir = await createRemoteRuntimeDir(machine, runId); let connection: HerdrForwardedConnection | undefined; try { connection = await herdrPaneHost.connect(machine); const owner = new HerdrPlacedRunOwner(machine, runId, runtimeDir, connection); await beforePane?.(owner); return owner; } catch (error) { const cleanupErrors: unknown[] = []; try { await connection?.close(); } catch (cleanupError) { cleanupErrors.push(cleanupError); } try { removeRemoteRuntimeDir(machine, runtimeDir); } catch (cleanupError) { cleanupErrors.push(cleanupError); } if (cleanupErrors.length) throw new AggregateError([error, ...cleanupErrors], "Herdr owner creation failed and cleanup also failed.", { cause: error }); throw error; } }
 	async provision(environment?: Record<string, string>): Promise<PlacementOwnedPane> { this.owned = await provisionHerdrOwnedPane(this.connection, this.machine, this.runId, this.runtimeDir, environment); return this.owned; }

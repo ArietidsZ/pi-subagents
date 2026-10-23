@@ -14,7 +14,7 @@ import {
 	type LaunchResolvedChildExtensions,
 	type ResolvedToolBudget,
 	type RunFanoutBudgetDescriptor,
-	type HerdrMachineReference,
+	type PlacementMachineReference,
 } from "../../shared/types.ts";
 import type { NestedPathEntry } from "./nested-path.ts";
 import { extensionOnlyMcpServers, type McpRuntimeSnapshotHost, type ResolvedMcpDirectToolSelection } from "./mcp-direct-tool-allowlist.ts";
@@ -62,7 +62,7 @@ export function inheritedChildRuntime(config: ChildRuntimeConfig | undefined): I
 }
 
 export interface BuildInProcessChildLaunchInput {
-	machine?: HerdrMachineReference;
+	machine?: PlacementMachineReference;
 	remoteSkillNames?: string[];
 	remoteReads?: string[] | false;
 	parentSessionId?: string;
