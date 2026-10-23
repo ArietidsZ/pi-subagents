@@ -34,23 +34,19 @@ export interface ResolveRexLocalPlacementInput {
 	/** Optional launch cwd: absolute, `~`, or relative to `cwd`. */
 	stepCwd?: string;
 	env?: NodeJS.ProcessEnv;
-	/** Test seam: the rex executable instead of resolving it. */
-	rexBin?: string;
 }
 
 function sessionConfirmed(stdout: string, session: string): boolean {
 	try { const parsed: { session_id?: string } | null = JSON.parse(stdout); return parsed?.session_id === session; } catch { return false; }
 }
 
-export interface RexLocalPlacement { machine: RexMachineReference }
-
 /** Resolves `machine: "local"` in the parent: records its Rex session (confirmed by the server) and server address, and the real launch directory. */
-export function resolveRexLocalPlacement(input: ResolveRexLocalPlacementInput): RexLocalPlacement {
+export function resolveRexLocalPlacement(input: ResolveRexLocalPlacementInput): RexMachineReference {
 	if (process.platform === "win32") throw new Error("Machine 'local' runs the child in a Rex pane, which is not supported on Windows.");
 	const env = input.env ?? process.env, session = env.REX_SESSION?.trim(), server = env.REX_SERVER?.trim();
 	if (!session) throw new Error("Machine 'local' opens the child in a new tab of this Rex session, but this Pi is not running inside Rex (REX_SESSION is not set).");
 	const globals = server ? ["--autostart=false", "-S", server] : ["--autostart=false"];
-	const result = spawnSync(input.rexBin ?? resolveRexBinary(env), [...globals, "session", "inspect", session, "--json"], { encoding: "utf8", env: rexCommandEnv(env), timeout: REX_RESOLVE_TIMEOUT_MS, maxBuffer: REX_MAX_OUTPUT, windowsHide: true });
+	const result = spawnSync(resolveRexBinary(env), [...globals, "session", "inspect", session, "--json"], { encoding: "utf8", env: rexCommandEnv(env), timeout: REX_RESOLVE_TIMEOUT_MS, maxBuffer: REX_MAX_OUTPUT, windowsHide: true });
 	if (result.error) throw new Error(`Could not ask Rex about this session: ${result.error.message}`, { cause: result.error });
 	if (result.status === REX_EXIT_GONE) throw new Error(`Machine 'local' needs this Pi's Rex session, but the Rex server does not know session ${session}.`);
 	if (result.status === REX_EXIT_UNREACHABLE) throw new Error("Machine 'local' needs the Rex server, but it is unreachable.");
@@ -64,5 +60,5 @@ export function resolveRexLocalPlacement(input: ResolveRexLocalPlacementInput): 
 	if (!fs.statSync(cwd).isDirectory()) throw new Error(`Machine 'local' cwd is not a directory: ${requested}.`);
 	const machine: RexMachineReference = { provider: "rex", id: REX_LOCAL_MACHINE, session, cwd };
 	if (server) machine.server = server;
-	return { machine };
+	return machine;
 }

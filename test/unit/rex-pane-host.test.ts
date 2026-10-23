@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { localMachineAccess } from "../../src/runs/shared/local-machine-access.ts";
 import { formatHerdrMachineRunnerUnsupported, resolveMachinePlacement } from "../../src/runs/shared/herdr-machine.ts";
-import { closeOwnedRexPane, connectRex } from "../../src/runs/shared/rex-pane-host.ts";
+import { closeOwnedRexPane, connectRex, rexPaneHost, RexPlacedRunOwner } from "../../src/runs/shared/rex-pane-host.ts";
 import type { RexMachineReference } from "../../src/shared/types.ts";
 
-// A fake `rex` on disk: it logs its argv and exits with the next scripted code for each command kind.
+// A fake `rex` on disk: it logs its argv, prints <kind>.out when present, and exits with the next scripted code for each command kind.
 const FAKE_REX = `#!/bin/sh
 d="$FAKE_REX_DIR"; printf '%s\\n' "$*" >> "$d/calls"
 printf '%s\\n' "\${REX_SESSION:-unset} \${REX_BLOCK:-unset} \${REX_SERVER:-unset}" >> "$d/selectors"
@@ -16,16 +17,22 @@ case "$*" in
   *" session inspect "*) key=session;;
   *" block inspect "*) key=inspect;;
   *" block close "*) key=close;;
+  *" window new "*) key=window;;
   *) key=other;;
 esac
 n=$(($(cat "$d/$key.n" 2>/dev/null || echo 0) + 1)); echo "$n" > "$d/$key.n"
 code=$(sed -n "\${n}p" "$d/$key" 2>/dev/null); [ -n "$code" ] || code=$(tail -n 1 "$d/$key" 2>/dev/null); [ -n "$code" ] || code=0
-if [ "$key" = session ] && [ "$code" = 0 ]; then printf '{"session_id":"%s"}' "$FAKE_REX_SESSION"; fi
+if [ -f "$d/$key.out" ]; then cat "$d/$key.out"; elif [ "$key" = session ] && [ "$code" = 0 ]; then printf '{"session_id":"%s"}' "$FAKE_REX_SESSION"; fi
 [ "$code" = 0 ] || echo "fake rex exit $code" >&2
 exit "$code"
 `;
 const session = "session:fake-1", machine: RexMachineReference = { provider: "rex", id: "local", session, server: "unix:///tmp/fake-rex.sock", cwd: "/tmp" };
 const owned = { workspaceId: session, tabId: "window:w1", paneId: "block:b1" };
+function withEnv(values: Record<string, string>): () => void {
+	const previous = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
+	Object.assign(process.env, values);
+	return () => { for (const [name, value] of Object.entries(previous)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } };
+}
 
 describe("Rex pane host exit codes and cleanup", { skip: process.platform === "win32" }, () => {
 	let dir: string, bin: string;
@@ -76,6 +83,42 @@ describe("Rex pane host exit codes and cleanup", { skip: process.platform === "w
 		const connection = await connect();
 		await assert.rejects(closeOwnedRexPane(connection, { ...owned, workspaceId: "session:other" }), /different Rex session/u);
 		assert.equal(calls().length, 1);
+	});
+
+	it("closes the window a failed or unreadable window new may have opened, found by the run's tab label", async () => {
+		const connection = await connect(), restore = withEnv({ PI_SUBAGENT_PI_BINARY: "/bin/echo" }), label = "subagent-89abcdef";
+		const listing = (...windows: Array<{ id: string; label: string; block: string }>) => fs.writeFileSync(path.join(dir, "session.out"), JSON.stringify({ session_id: session, windows: windows.map((window) => ({ window_id: window.id, label: window.label, layers: [{ blocks: [{ block_id: window.block }] }] })) }));
+		const launch = () => rexPaneHost.launch(connection, machine, "run_0123456789abcdef", "/tmp/unused", { kind: "pi", name: "pi", args: [] }, async () => { throw new Error("onPane must not run for an unparsed window"); });
+		try {
+			fs.writeFileSync(path.join(dir, "window.out"), "not json"); listing({ id: "window:parent", label: "Window 1", block: "block:parent" }, { id: "window:w9", label, block: "block:b9" });
+			script("inspect", [0, 3]); script("close", [0]);
+			await assert.rejects(launch(), /window new returned malformed JSON/u);
+			const windowNew = calls().find((call) => call.includes(" window new "));
+			assert.match(windowNew ?? "", new RegExp(`window new -s ${session} ${label} -c /tmp --focus=false --json -- /usr/bin/env /bin/echo$`, "u"));
+			assert.deepEqual(calls().filter((call) => call.includes(" block ")), [`--autostart=false -S ${machine.server} block inspect -s ${session} block:b9`, `--autostart=false -S ${machine.server} block close -s ${session} block:b9`, `--autostart=false -S ${machine.server} block inspect -s ${session} block:b9`]);
+
+			fs.rmSync(path.join(dir, "window.out")); script("window", [1]); listing({ id: "window:parent", label: "Window 1", block: "block:parent" });
+			await assert.rejects(launch(), /window new exited with code 1/u);
+			assert.equal(calls().filter((call) => call.includes(" block close ")).length, 1);
+		} finally { restore(); }
+	});
+
+	it("keeps the bridge socket path within the macOS 103-byte limit for a 65-character run id", async () => {
+		const runId = `${"w".repeat(48)}_0123456789abcdef`, restore = withEnv({ REX_BIN_DIR: dir, FAKE_REX_DIR: dir, FAKE_REX_SESSION: session });
+		assert.equal(runId.length, 65);
+		let runtimeDir = "";
+		try {
+			const owner = await RexPlacedRunOwner.create(machine, runId); runtimeDir = owner.runtimeDir;
+			try {
+				const socketPath = path.join(runtimeDir, "bridge.sock");
+				assert.ok(Buffer.byteLength(socketPath) <= 103, socketPath);
+				assert.match(path.basename(runtimeDir), /^pi-subagents-herdr-[0-9a-f]{12}-/u);
+				const server = net.createServer();
+				await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve); });
+				await new Promise((resolve) => server.close(resolve));
+			} finally { await owner.cleanup(); }
+		} finally { restore(); }
+		assert.equal(fs.existsSync(runtimeDir), false);
 	});
 });
 

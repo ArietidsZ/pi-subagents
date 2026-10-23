@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import type { ChildSessionLaunch } from "../../src/runs/shared/child-session.ts";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { createPlacementAwareChildSessionFactory, HerdrPiSession } from "../../src/runs/shared/herdr-placed-run.ts";
@@ -22,7 +23,7 @@ function findRex(): string | undefined { try { return resolveRexBinary(); } catc
 function findPi(): string | undefined { const found = spawnSync("/bin/sh", ["-c", "command -v pi"], { encoding: "utf8" }); return found.status === 0 && found.stdout.trim() ? found.stdout.trim() : undefined; }
 const rexBin = enabled ? findRex() : undefined, piBin = enabled ? findPi() : undefined;
 const skip = !enabled ? "set PI_SUBAGENTS_REX_SMOKE=1" : process.platform === "win32" ? "Rex placement is POSIX-only" : !rexBin ? "Rex is not installed" : !piBin ? "pi is not on PATH" : false;
-const worktree = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
+const worktree = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const log = (line: string) => process.stdout.write(`[rex-smoke] ${line}\n`);
 
 describe("Rex local placement against a private Rex server and a real Pi", { skip }, () => {

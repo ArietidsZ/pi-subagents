@@ -244,7 +244,7 @@ export function resolveHerdrMachinePlacement(input: ResolveHerdrMachinePlacement
 
 /** `local` resolves to a Rex pane on this machine; any other value is a Herdr saved machine. */
 export function resolveMachinePlacement(input: ResolveHerdrMachinePlacementInput): MachinePlacement {
-	if (input.machine.trim() === REX_LOCAL_MACHINE) return resolveRexLocalPlacement({ cwd: input.cwd, stepCwd: input.stepCwd, env: input.env });
+	if (input.machine.trim() === REX_LOCAL_MACHINE) return { machine: resolveRexLocalPlacement({ cwd: input.cwd, stepCwd: input.stepCwd, env: input.env }) };
 	return resolveHerdrMachinePlacement(input);
 }
 
