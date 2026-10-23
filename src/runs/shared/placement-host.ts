@@ -12,6 +12,8 @@ export interface PlacementBridgeIdentity { runId?: string; nativeSessionId?: str
 export type PlacementEvidenceProof = { ok: true; cursor: number } | { ok: false; reason: string };
 export type PlacementReconnectCheck = { ok: true; state: PlacementRunState; paneId: string; cursor: number } | { ok: false; reason: string };
 export interface PlacementStartOptions { timeoutMs?: number; pollMs?: number; clock?: { now(): number; wait(ms: number): Promise<void> } }
+/** What to start in a new pane; the pane is created in the machine's cwd with this environment. */
+export interface PlacementLaunchRequest { kind: PlacementAgentKind; name: string; args: string[]; environment?: Record<string, string> }
 export interface PlacementCommandOptions { timeout?: number; maxBuffer?: number }
 export interface PlacementCommandResult { status: number | null; stdout: string; stderr: string; error?: Error }
 export interface PlacementSocketForward { socketPath: string; close(): Promise<void> }
@@ -30,12 +32,12 @@ export interface PlacementMachineAccess {
 export interface PlacementPaneHost<C extends PlacementSockets = PlacementSockets, P extends object = object, E = unknown> {
 	connect(machine: HerdrMachineReference): Promise<C>;
 	sessionOf(connection: C): string | null;
-	provision(connection: C, machine: HerdrMachineReference, runId: string, runtimeDir: string, environment?: Record<string, string>): Promise<PlacementOwnedPane>;
-	start(connection: C, owned: PlacementOwnedPane, kind: PlacementAgentKind, name: string, args: string[], options?: PlacementStartOptions): Promise<{ terminalId: string; paneId: string }>;
-	prompt(connection: C, agentName: string, text: string): Promise<void>;
+	/** Create the pane and start the agent in it; call onPane after the pane exists and before the agent starts. */
+	launch(connection: C, machine: HerdrMachineReference, runId: string, runtimeDir: string, request: PlacementLaunchRequest, onPane: (owned: PlacementOwnedPane) => Promise<void>, options?: PlacementStartOptions): Promise<{ owned: PlacementOwnedPane; terminalId: string }>;
+	prompt(connection: C, identity: HerdrRunIdentity, text: string): Promise<void>;
 	subscribe(connection: C, paneId: string, listener: (event: E) => void, onDisconnect: (error: Error) => void): Promise<() => void>;
 	paneEvent(event: E, fallback: PlacementRunState): { terminalId: unknown; paneId: unknown; state: PlacementRunState } | undefined;
-	panes(connection: C): Promise<P>;
+	panes(connection: C, identity: HerdrRunIdentity): Promise<P>;
 	reconcile(identity: HerdrRunIdentity, panes: P, proveEvidence: () => PlacementEvidenceProof): PlacementReconnectCheck;
 	closeOwnedPane(connection: C, owned: PlacementOwnedPane, terminalId: string | undefined, agentName: string | undefined): Promise<void>;
 }

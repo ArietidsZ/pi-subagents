@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { HerdrExternalNeedsAttentionError, HerdrExternalSession, createHerdrExternalAdapter, createHerdrExternalAdapterLaunch, monitorHerdrCodex, prepareInternalHerdrExternalAdapter, reconcileHerdrExternalRun, runHerdrExternalPreflight, validateHerdrExternalPreflight, type HerdrCodexSnapshot, type HerdrExternalLaunch } from "../../src/runs/shared/herdr-external-adapters.ts";
-import { HerdrPlacedRunOwner } from "../../src/runs/shared/herdr-placed-run.ts";
+import { HerdrPlacedRunOwner } from "../../src/runs/shared/herdr-pane-host.ts";
 import { settleHerdrExternalRunnerError } from "../../src/runs/background/subagent-runner.ts";
 import { HerdrRpcError, HerdrTransportError } from "../../src/runs/shared/herdr-connection.ts";
 

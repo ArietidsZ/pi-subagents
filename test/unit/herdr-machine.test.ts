@@ -13,7 +13,7 @@ import {
 import type { HerdrMachineReference } from "../../src/shared/types.ts";
 import { herdrPaneAllocationKey } from "../../src/runs/shared/placement-host.ts";
 import { connectHerdrMachine, decodeHerdrJsonLine, discoverHerdrEndpoint, hardenedSshEnv, herdrSshArgs, HERDR_REMOTE_PATH, HERDR_SSH_BASE, runHerdrRemoteCommandAsync } from "../../src/runs/shared/herdr-connection.ts";
-import { createRemoteRuntimeDir, discoverBridgeManifest, removeRemoteRuntimeDir } from "../../src/runs/shared/herdr-placed-run.ts";
+import { createRemoteRuntimeDir, discoverBridgeManifest, removeRemoteRuntimeDir } from "../../src/runs/shared/herdr-pane-host.ts";
 
 const catalog = JSON.stringify([
 	{ id: "7b9b56b47aab5ff46f338f1cd3ed1d15", label: "workmac", target: "100.82.67.118", session: "default", enabled: true, selected: false },
