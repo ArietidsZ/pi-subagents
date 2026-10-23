@@ -282,6 +282,14 @@ Placed external profiles are one-shot and stop-only: they cannot steer, resume, 
 
 pi-subagents never clones, pulls, or checks out on the machine. Generic `external-cli` commands and managed worktrees are rejected before launch; saved-machine placement accepts native Pi and only the six code-owned external profiles.
 
+## Running a Pi child in a Rex pane on this machine
+
+`machine: "local"` runs a native Pi child as a visible Pi in a new background tab of your own Rex session, labeled `subagent-<run id tail>`. It works wherever `machine` works: frontmatter, settings overrides, the `subagent` tool, workflow `runs.run`, chain, parallel, and dynamic-fanout steps. `local` is reserved and never looks in the Herdr catalog. The parent Pi must run inside Rex: with no `REX_SESSION`, or a session the Rex server does not confirm, the launch fails before anything starts.
+
+The parent drives the child through the same bridge as a Herdr-placed Pi: prompt, steer, follow-up, abort, `contact_supervisor`, and results. The child Pi loads pi-subagents from its own extensions, so it must be installed at the same version. `cwd` is a directory on this machine; a relative path joins the launch directory. pi-subagents finds `rex` in `$REX_BIN_DIR`, then on `PATH`, then in the Rex server app.
+
+A finished child keeps its tab open, with the idle Pi, until you close it; an aborted or stopped child's tab is closed. Limits: native Pi only (Claude Code, Codex, Cursor, and generic `external-cli` agents are rejected), fresh context only, and the same restrictions as a Herdr-placed Pi (no local extension paths, process environment, nested delegation, permission rules, or tool budgets). Rex machines over SSH are not supported yet.
+
 ## Sandboxing background children with a launcher
 
 A launcher wraps an agent's background runner in a command you choose, so that agent can run in a different sandbox from the parent session. Define the command in the user config key [`runnerLaunchers`](configuration.md#runnerlaunchers), then name it in the agent file:

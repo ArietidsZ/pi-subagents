@@ -1,5 +1,3 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { Type, type StaticEncode, type TSchema } from "typebox";
 import { Compile, type Validator } from "typebox/compile";
@@ -9,32 +7,13 @@ import { localMachineAccess } from "./local-machine-access.ts";
 import { getPiSpawnCommand } from "./pi-spawn.ts";
 import { createPlacedRuntimeDir, PlacedRunOwner, removePlacedRuntimeDir } from "./placed-run-owner.ts";
 import type { PlacementCommandResult, PlacementEvidenceProof, PlacementMachineAccess, PlacementOwnedPane, PlacementPaneHost, PlacementReconnectCheck, PlacementSockets } from "./placement-host.ts";
+import { REX_EXIT_GONE, REX_EXIT_UNREACHABLE, resolveRexBinary, rexCommandEnv } from "./rex-machine.ts";
 
-/** Rex CLI exit codes: 3 means the target is gone, 4 means the server is unreachable (state unknown, never "gone"). */
-export const REX_EXIT_GONE = 3, REX_EXIT_UNREACHABLE = 4;
-const REX_BUNDLE_BIN = "Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex";
 const REX_CALL_TIMEOUT_MS = 15_000, REX_MAX_OUTPUT = 1024 * 1024, REX_CLOSE_POLLS = 20, REX_CLOSE_POLL_MS = 50;
 const sessionInspection = Compile(Type.Object({ session_id: Type.String() }));
 const createdWindow = Compile(Type.Object({ window_id: Type.String(), block_ids: Type.Tuple([Type.String()]) }));
 const blockProcess = Compile(Type.Object({ foreground: Type.Object({ pid: Type.Integer() }) }));
 const bridgeManifestPid = Compile(Type.Object({ pid: Type.Integer() }));
-
-function executable(file: string): boolean { try { fs.accessSync(file, fs.constants.X_OK); return fs.statSync(file).isFile(); } catch { return false; } }
-
-/** `$REX_BIN_DIR/rex`, then `rex` on PATH, then the Rex server bundle. */
-export function resolveRexBinary(env: NodeJS.ProcessEnv = process.env): string {
-	const fromDir = env.REX_BIN_DIR ? [path.join(env.REX_BIN_DIR, "rex")] : [];
-	const fromPath = (env.PATH ?? "").split(path.delimiter).filter((dir) => path.isAbsolute(dir)).map((dir) => path.join(dir, "rex"));
-	const found = [...fromDir, ...fromPath, path.join(os.homedir(), REX_BUNDLE_BIN)].find(executable);
-	if (!found) throw new Error("The Rex CLI was not found: set REX_BIN_DIR, put rex on PATH, or install Rex.");
-	return found;
-}
-
-/** Every Rex selector comes from the recorded machine reference, never from the calling process's own Rex pane variables. */
-export function rexCommandEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-	const { REX_SESSION: _session, REX_BLOCK: _block, REX_SERVER: _server, ...env } = source;
-	return env;
-}
 
 /** Rex runtime directories go under /tmp: the bridge socket path inside a macOS TMPDIR exceeds the unix socket path limit. */
 function rexAccess(): PlacementMachineAccess { return localMachineAccess({ env: { ...rexCommandEnv(), TMPDIR: "/tmp" } }); }

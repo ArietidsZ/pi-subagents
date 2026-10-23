@@ -7,7 +7,9 @@ import { describe, it } from "node:test";
 import type { ChildSessionLaunch } from "../../src/runs/shared/child-session.ts";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { createPlacementAwareChildSessionFactory, HerdrPiSession } from "../../src/runs/shared/herdr-placed-run.ts";
-import { connectRex, closeOwnedRexPane, rexCommandEnv, resolveRexBinary } from "../../src/runs/shared/rex-pane-host.ts";
+import { resolveMachinePlacement } from "../../src/runs/shared/herdr-machine.ts";
+import { resolveRexBinary, rexCommandEnv } from "../../src/runs/shared/rex-machine.ts";
+import { closeOwnedRexPane, connectRex } from "../../src/runs/shared/rex-pane-host.ts";
 import type { RexMachineReference } from "../../src/shared/types.ts";
 
 // Live check against a private Rex server and a real Pi: PI_SUBAGENTS_REX_SMOKE=1 npm run test:unit -- (or run this file alone).
@@ -49,7 +51,10 @@ describe("Rex local placement against a private Rex server and a real Pi", { ski
 			fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${JSON.stringify(piBin)} -ne -e ${JSON.stringify(path.join(worktree, "index.ts"))} --session-dir ${JSON.stringify(sessions)} "$@"\n`, { mode: 0o755 });
 			process.env.PI_SUBAGENT_PI_BINARY = wrapper;
 
+			// The parent's view: REX_SESSION/REX_SERVER name the private session, and resolution asks that server to confirm it.
+			const resolved = resolveMachinePlacement({ machine: "local", cwd: project, env: { ...serverEnv, REX_BIN_DIR: path.dirname(rexBin!), REX_SESSION: session, REX_SERVER: server } }).machine;
 			const machine: RexMachineReference = { provider: "rex", id: "local", session, server, cwd: project };
+			assert.deepEqual(resolved, machine);
 			// Any model the operator's Pi is logged in to; override with PI_SUBAGENTS_REX_SMOKE_MODEL.
 			const model = process.env.PI_SUBAGENTS_REX_SMOKE_MODEL ?? "opencode-go/glm-5.3-flash";
 			const launch: ChildSessionLaunch = { cwd: project, machine, remoteResources: { agent: "rex-smoke" }, storage: { kind: "memory" }, extensionPaths: [], ambientExtensions: true, hooks: [], noSkills: true, noContextFiles: true, tools: ["read"], model, runtime: { runId: "rexsmoke", agent: "rex-smoke", childIndex: 0, fanoutChild: false, depth: 1, maxDepth: 1, inheritProjectContext: true, inheritGlobalContext: true, inheritSkills: false, fast: false, waitTool: { enabled: true } } };

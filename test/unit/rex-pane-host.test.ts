@@ -4,12 +4,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { localMachineAccess } from "../../src/runs/shared/local-machine-access.ts";
+import { formatHerdrMachineRunnerUnsupported, resolveMachinePlacement } from "../../src/runs/shared/herdr-machine.ts";
 import { closeOwnedRexPane, connectRex } from "../../src/runs/shared/rex-pane-host.ts";
 import type { RexMachineReference } from "../../src/shared/types.ts";
 
 // A fake `rex` on disk: it logs its argv and exits with the next scripted code for each command kind.
 const FAKE_REX = `#!/bin/sh
 d="$FAKE_REX_DIR"; printf '%s\\n' "$*" >> "$d/calls"
+printf '%s\\n' "\${REX_SESSION:-unset} \${REX_BLOCK:-unset} \${REX_SERVER:-unset}" >> "$d/selectors"
 case "$*" in
   *" session inspect "*) key=session;;
   *" block inspect "*) key=inspect;;
@@ -74,5 +76,37 @@ describe("Rex pane host exit codes and cleanup", { skip: process.platform === "w
 		const connection = await connect();
 		await assert.rejects(closeOwnedRexPane(connection, { ...owned, workspaceId: "session:other" }), /different Rex session/u);
 		assert.equal(calls().length, 1);
+	});
+});
+
+describe("machine 'local' resolution", { skip: process.platform === "win32" }, () => {
+	let dir: string;
+	const script = (codes: number[]) => fs.writeFileSync(path.join(dir, "session"), `${codes.join("\n")}\n`);
+	const parentEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({ PATH: "/usr/bin:/bin", REX_BIN_DIR: dir, FAKE_REX_DIR: dir, FAKE_REX_SESSION: session, ...extra });
+	let insideRex: NodeJS.ProcessEnv;
+	beforeEach(() => { dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fake-rex-"))); fs.writeFileSync(path.join(dir, "rex"), FAKE_REX, { mode: 0o755 }); fs.mkdirSync(path.join(dir, "repo")); insideRex = parentEnv({ REX_SESSION: session, REX_BLOCK: "block:parent", REX_SERVER: "unix:///tmp/fake-rex.sock" }); });
+	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+	it("records the parent's confirmed Rex session, server and real launch directory without reading the Herdr catalog", () => {
+		const placement = resolveMachinePlacement({ machine: "local", cwd: dir, stepCwd: "repo", env: insideRex, herdrBin: path.join(dir, "no-herdr") });
+		assert.deepEqual(placement, { machine: { provider: "rex", id: "local", session, server: "unix:///tmp/fake-rex.sock", cwd: path.join(dir, "repo") } });
+		assert.deepEqual(fs.readFileSync(path.join(dir, "calls"), "utf8").trim().split("\n"), [`--autostart=false -S unix:///tmp/fake-rex.sock session inspect ${session} --json`]);
+		assert.equal(fs.readFileSync(path.join(dir, "selectors"), "utf8").trim(), "unset unset unset");
+	});
+
+	it("fails closed outside Rex, for a session the server does not know, and when the server is unreachable", () => {
+		assert.throws(() => resolveMachinePlacement({ machine: "local", cwd: dir, env: parentEnv() }), /not running inside Rex/u);
+		assert.equal(fs.existsSync(path.join(dir, "calls")), false);
+		script([3]); assert.throws(() => resolveMachinePlacement({ machine: "local", cwd: dir, env: insideRex }), /does not know session/u);
+		fs.rmSync(path.join(dir, "session.n")); script([4]); assert.throws(() => resolveMachinePlacement({ machine: "local", cwd: dir, env: insideRex }), /unreachable/u);
+		fs.rmSync(path.join(dir, "session.n")); script([0]); assert.throws(() => resolveMachinePlacement({ machine: "local", cwd: dir, env: { ...insideRex, FAKE_REX_SESSION: "session:other" } }), /did not confirm/u);
+		assert.throws(() => resolveMachinePlacement({ machine: "local", cwd: dir, stepCwd: "missing", env: insideRex }), /cwd does not exist/u);
+	});
+
+	it("rejects external runners and managed worktrees on machine 'local' before launch", () => {
+		assert.equal(formatHerdrMachineRunnerUnsupported({ machine: "local", agentName: "worker" }), undefined);
+		assert.match(formatHerdrMachineRunnerUnsupported({ machine: "local", agentName: "claude", runnerType: "external-cli", adapter: "claude-code" }) ?? "", /native Pi children only/u);
+		assert.match(formatHerdrMachineRunnerUnsupported({ machine: "local", agentName: "tool", runnerType: "external-cli" }) ?? "", /native Pi children only/u);
+		assert.match(formatHerdrMachineRunnerUnsupported({ machine: "local", agentName: "worker", worktree: true }) ?? "", /managed worktrees/u);
 	});
 });

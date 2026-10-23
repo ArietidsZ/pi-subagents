@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExternalProcessStatus, HerdrMachineReference } from "../../shared/types.ts";
+import type { ExternalProcessStatus, HerdrMachineReference, PlacementMachineReference } from "../../shared/types.ts";
 import { getAgentDir, getProjectConfigDir } from "../../shared/utils.ts";
 import { CODE_OWNED_EXTERNAL_CLI_ADAPTER_IDS, type CodeOwnedExternalCliAdapterId } from "./external-cli-contract.ts";
 import type { runExternalCli } from "./external-cli-runner.ts";
+import { REX_LOCAL_MACHINE, resolveRexLocalPlacement } from "./rex-machine.ts";
 export { shellQuoteRemote as shellQuote } from "./herdr-connection.ts";
 
 /**
@@ -57,6 +58,12 @@ export interface ResolveHerdrMachinePlacementInput {
 export interface HerdrMachinePlacement {
 	machine: HerdrMachineReference;
 	/** Opt-in `subagents.machines.<name>.env`, exported in front of the remote command. */
+	env?: Record<string, string>;
+}
+
+/** A resolved `machine` value: a Herdr saved machine, or the reserved `local` (a Rex pane on this machine). */
+export interface MachinePlacement {
+	machine: PlacementMachineReference;
 	env?: Record<string, string>;
 }
 
@@ -235,6 +242,12 @@ export function resolveHerdrMachinePlacement(input: ResolveHerdrMachinePlacement
 	};
 }
 
+/** `local` resolves to a Rex pane on this machine; any other value is a Herdr saved machine. */
+export function resolveMachinePlacement(input: ResolveHerdrMachinePlacementInput): MachinePlacement {
+	if (input.machine.trim() === REX_LOCAL_MACHINE) return resolveRexLocalPlacement({ cwd: input.cwd, stepCwd: input.stepCwd, env: input.env });
+	return resolveHerdrMachinePlacement(input);
+}
+
 export function formatHerdrMachineRunnerUnsupported(input: {
 	machine?: string;
 	agentName: string;
@@ -243,6 +256,12 @@ export function formatHerdrMachineRunnerUnsupported(input: {
 	worktree?: boolean;
 }): string | undefined {
 	if (input.machine === undefined) return undefined;
+	if (input.machine.trim() === REX_LOCAL_MACHINE) {
+		if (input.runnerType !== undefined && input.runnerType !== "pi") return `Agent '${input.agentName}' requested machine 'local', but Rex supports native Pi children only for now. Remove the machine or use a native Pi agent.`;
+		if (input.worktree === true) return `Agent '${input.agentName}' requested machine 'local', but managed worktrees cannot be combined with machine placement.`;
+		if (process.platform === "win32") return "Machine 'local' runs the child in a Rex pane, which is not supported on Windows.";
+		return undefined;
+	}
 	if (input.runnerType !== undefined && input.runnerType !== "pi" && input.runnerType !== "external-cli") {
 		return `Agent '${input.agentName}' requested machine '${input.machine}', but this runner cannot use pane-native Herdr placement. Use native Pi or a built-in Claude, Codex, or Cursor profile.`;
 	}
