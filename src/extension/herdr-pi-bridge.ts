@@ -19,7 +19,6 @@ interface PendingRequest { operation: "prompt" | "steer" | "follow-up" | "abort"
 interface BridgeContext {
 	isIdle(): boolean;
 	hasPendingMessages(): boolean;
-	getActiveTools?(): string[];
 	sessionManager?: { getSessionId?(): string; getSessionFile?(): string | undefined };
 	model?: { provider?: string; id?: string };
 }
@@ -72,7 +71,8 @@ export default function registerHerdrPiBridge(pi: ExtensionAPI): void {
 		client.write(encodeHerdrPiFrame(record));
 	};
 	const sessionId = (ctx: BridgeContext) => ctx.sessionManager?.getSessionId?.();
-	const activeTools = (ctx: BridgeContext) => ctx.getActiveTools?.() ?? [];
+	// The active tool set lives on the Pi API, not on the event context.
+	const activeTools = (_ctx: BridgeContext) => pi.getActiveTools();
 
 	pi.registerTool({
 		name: "contact_supervisor",
