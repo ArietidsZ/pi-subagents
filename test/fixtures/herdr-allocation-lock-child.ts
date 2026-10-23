@@ -1,4 +1,4 @@
-import { withHerdrPaneAllocationLock } from "../../src/runs/shared/herdr-placed-run.ts";
+import { withHerdrPaneAllocationLock } from "../../src/runs/shared/placement-host.ts";
 
 const [encodedKey, holdText, timeoutText] = process.argv.slice(2);
 const key = Buffer.from(encodedKey!, "base64url").toString("utf8");

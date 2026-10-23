@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { provisionHerdrPane } from "../../src/runs/shared/herdr-placed-run.ts";
+import { provisionHerdrPane } from "../../src/runs/shared/herdr-pane-host.ts";
 
 const [statePath, encodedKey, runId] = process.argv.slice(2);
 const key = Buffer.from(encodedKey!, "base64url").toString("utf8");

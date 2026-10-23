@@ -3,7 +3,8 @@ import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { HerdrMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
 import { connectHerdrMachine, HerdrRpcError, HerdrTransportError, remoteShellCommand, shellQuoteRemote, type HerdrForwardedConnection } from "./herdr-connection.ts";
-import { HerdrPlacedRunOwner, herdrStatusSubscriptions, ownsHerdrPane, parseHerdrAgent, reconcileHerdrPlacedRun, type HerdrReconnectCandidate, type HerdrRunIdentity } from "./herdr-placed-run.ts";
+import { herdrStatusSubscriptions, ownsHerdrPane, parseHerdrAgent, reconcileHerdrPlacedRun, type HerdrReconnectCandidate } from "./herdr-pane-host.ts";
+import { HerdrPlacedRunOwner, type HerdrRunIdentity } from "./herdr-placed-run.ts";
 
 export type HerdrExternalAdapterId = "claude-code" | "claude-code-writer" | "cursor-agent" | "cursor-agent-writer" | "codex-exec" | "codex-exec-writer";
 export type HerdrExternalKind = "claude" | "cursor" | "codex";

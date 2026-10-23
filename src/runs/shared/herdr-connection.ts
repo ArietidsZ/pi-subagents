@@ -4,6 +4,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { HerdrMachineReference } from "../../shared/types.ts";
+import type { PlacementMachineAccess, PlacementSockets } from "./placement-host.ts";
 
 const MAX_DISCOVERY_BYTES = 256 * 1024;
 const MAX_RPC_BYTES = 4 * 1024 * 1024;
@@ -116,9 +117,7 @@ async function waitForSocket(socketPath: string, child: ChildProcess): Promise<v
 }
 async function terminateChild(child: ChildProcess): Promise<void> { const wait = (ms: number) => child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : Promise.race([new Promise<void>((resolve) => child.once("exit", () => resolve())), new Promise<void>((resolve) => setTimeout(resolve, ms))]); if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); await wait(1_000); if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await wait(1_000); } }
 
-export async function connectHerdrMachine(machine: HerdrMachineReference, options: { sshBin?: string; env?: NodeJS.ProcessEnv } = {}): Promise<HerdrForwardedConnection> {
-	if (process.platform === "win32") throw new Error("Pane-native Herdr placement requires OpenSSH StreamLocal forwarding and is not supported on Windows.");
-	const endpoint = await discoverHerdrEndpoint(machine, options);
+function openSshSockets(machine: HerdrMachineReference, options: { sshBin?: string; env?: NodeJS.ProcessEnv }): PlacementSockets {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-herdr-")); fs.chmodSync(dir, 0o700);
 	const children = new Set<ChildProcess>();
 	const forward = async (remotePath: string, name: string) => {
@@ -129,6 +128,18 @@ export async function connectHerdrMachine(machine: HerdrMachineReference, option
 		try { await waitForSocket(local, child); } catch (error) { await stop(); throw error; }
 		return { socketPath: local, close: stop };
 	};
-	const primary = await forward(endpoint.socket, "herdr").catch((error) => { fs.rmSync(dir, { recursive: true, force: true }); throw error; });
-	return { endpoint, socketPath: primary.socketPath, client: new SocketRpcClient(primary.socketPath), forwardRemoteSocket: forward, close: async () => { await Promise.all([...children].map(terminateChild)); children.clear(); fs.rmSync(dir, { recursive: true, force: true }); } };
+	return { forwardRemoteSocket: forward, close: async () => { await Promise.all([...children].map(terminateChild)); children.clear(); fs.rmSync(dir, { recursive: true, force: true }); } };
+}
+
+/** SSH machine access: hardened ssh commands and StreamLocal forwards that share one private local directory per socket scope. */
+export function sshMachineAccess(machine: HerdrMachineReference, options: { sshBin?: string; env?: NodeJS.ProcessEnv } = {}): PlacementMachineAccess {
+	return { shellCommand: remoteShellCommand, run: (command, limits = {}) => runHerdrRemoteCommand(machine, command, { ...options, ...limits }), runAsync: (command, limits = {}) => runHerdrRemoteCommandAsync(machine, command, { ...options, ...limits }), openSockets: () => openSshSockets(machine, options) };
+}
+
+export async function connectHerdrMachine(machine: HerdrMachineReference, options: { sshBin?: string; env?: NodeJS.ProcessEnv } = {}): Promise<HerdrForwardedConnection> {
+	if (process.platform === "win32") throw new Error("Pane-native Herdr placement requires OpenSSH StreamLocal forwarding and is not supported on Windows.");
+	const endpoint = await discoverHerdrEndpoint(machine, options);
+	const sockets = sshMachineAccess(machine, options).openSockets();
+	const primary = await sockets.forwardRemoteSocket(endpoint.socket, "herdr").catch(async (error) => { await sockets.close(); throw error; });
+	return { endpoint, socketPath: primary.socketPath, client: new SocketRpcClient(primary.socketPath), forwardRemoteSocket: sockets.forwardRemoteSocket, close: sockets.close };
 }
