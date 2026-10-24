@@ -4,6 +4,19 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { formatHerdrMachineRunnerUnsupported, resolveMachinePlacement } from "../../src/runs/shared/herdr-machine.ts";
+import { localMachineAccess } from "../../src/runs/shared/local-machine-access.ts";
+import { rexPaneHost, RexPlacedRunOwner } from "../../src/runs/shared/rex-pane-host.ts";
+import type { RexSshMachineReference } from "../../src/shared/types.ts";
+
+// A fake remote `rex`: it logs its argv, lists sessions.json, makes `new` publish after-new.json, and confirms any session unless `gone` exists.
+const FAKE_REX = `#!/bin/sh
+d="$FAKE_REX_DIR"; printf '%s\\n' "$*" >> "$d/calls"
+case "$*" in
+  *" ls --json") cat "$d/sessions.json";;
+  *" new subagents --json") cp "$d/after-new.json" "$d/sessions.json"; printf '{"session_id":"session:new","initial_windows":[]}';;
+  *" session inspect "*) if [ -f "$d/gone" ]; then echo "session not found" >&2; exit 3; fi; printf '{"session_id":"%s"}' "$4";;
+esac
+`;
 
 function writeJson(filePath: string, value: unknown): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -50,5 +63,49 @@ describe("Rex SSH machine resolution", () => {
 		writeJson(userSettings, { subagents: { machines: { workmac: { rex: { ssh: "100.82.67.118" } } } } });
 		assert.match(formatHerdrMachineRunnerUnsupported(claude) ?? "", /machine 'workmac', but Rex supports native Pi children only/u);
 		assert.equal(formatHerdrMachineRunnerUnsupported({ machine: "workmac", agentName: "worker" }), undefined);
+	});
+});
+
+describe("Rex SSH session", { skip: process.platform === "win32" }, () => {
+	let dir: string, machine: RexSshMachineReference;
+	const sessions = (file: string, ...entries: Array<[string, string]>) => fs.writeFileSync(path.join(dir, file), JSON.stringify({ sessions: entries.map(([id, label]) => ({ session_id: id, label })) }));
+	const calls = () => fs.readFileSync(path.join(dir, "calls"), "utf8").trim().split("\n");
+	// The remote machine is this one: the access runs the same scripts SSH would send, and finds the fake rex through REX_BIN_DIR.
+	const create = () => RexPlacedRunOwner.create(machine, "run_session_test", { sshAccess: localMachineAccess({ env: { PATH: "/usr/bin:/bin", HOME: dir, REX_BIN_DIR: dir, FAKE_REX_DIR: dir } }) });
+	beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "rex-ssh-session-")); fs.writeFileSync(path.join(dir, "rex"), FAKE_REX, { mode: 0o755 }); machine = { provider: "rex", id: "workmac", target: "workmac.example", cwd: dir }; });
+	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+	it("creates the subagents session once when there is none, and opens in it with the real remote cwd", async () => {
+		sessions("sessions.json", ["session:mine", "brave-strait"]); sessions("after-new.json", ["session:mine", "brave-strait"], ["session:new", "subagents"]);
+		const owner = await create();
+		try {
+			assert.equal(owner.connection.session, "session:new");
+			assert.equal(owner.machine.cwd, fs.realpathSync(dir));
+			assert.equal(calls().filter((call) => call.endsWith(" new subagents --json")).length, 1);
+		} finally { await owner.cleanup(); }
+	});
+
+	it("reuses one subagents session and refuses when the label is not unique, also right after creating it", async () => {
+		sessions("sessions.json", ["session:s1", "subagents"]);
+		const owner = await create();
+		await owner.cleanup();
+		assert.equal(owner.connection.session, "session:s1");
+		assert.ok(!calls().some((call) => call.includes(" new ")));
+		sessions("sessions.json", ["session:s1", "subagents"], ["session:s2", "subagents"]);
+		await assert.rejects(create(), /has 2 sessions labeled subagents/u);
+		sessions("sessions.json"); sessions("after-new.json", ["session:new", "subagents"], ["session:other-laptop", "subagents"]);
+		await assert.rejects(create(), /has 2 sessions labeled subagents/u);
+	});
+
+	it("reconnects only to the recorded session and fails closed, never creating one, once it is gone", async () => {
+		sessions("sessions.json", ["session:s1", "subagents"]);
+		const owner = await create();
+		try {
+			await assert.rejects(rexPaneHost.connect(machine), /no recorded session/u);
+			fs.writeFileSync(path.join(dir, "gone"), "");
+			const before = calls().length;
+			await assert.rejects(owner.host.connect(machine), /session session:s1 no longer exists/u);
+			assert.deepEqual(calls().slice(before).filter((call) => !call.includes(" session inspect session:s1 ")), []);
+		} finally { await owner.cleanup(); }
 	});
 });

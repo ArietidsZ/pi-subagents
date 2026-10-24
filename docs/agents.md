@@ -288,7 +288,29 @@ pi-subagents never clones, pulls, or checks out on the machine. Generic `externa
 
 The parent drives the child through the same bridge as a Herdr-placed Pi: prompt, steer, follow-up, abort, `contact_supervisor`, and results. The child Pi loads pi-subagents from its own extensions, so it must be installed at the same version. `cwd` is a directory on this machine; a relative path joins the launch directory. pi-subagents finds `rex` in `$REX_BIN_DIR`, then on `PATH`, then in the Rex server app.
 
-A finished child keeps its tab open, with the idle Pi, until you close it; an aborted or stopped child's tab is closed. Limits: native Pi only (Claude Code, Codex, Cursor, and generic `external-cli` agents are rejected), fresh context only, and the same restrictions as a Herdr-placed Pi (no local extension paths, process environment, nested delegation, permission rules, or tool budgets). Rex machines over SSH are not supported yet.
+A finished child keeps its tab open, with the idle Pi, until you close it; an aborted or stopped child's tab is closed. Limits: native Pi only (Claude Code, Codex, Cursor, and generic `external-cli` agents are rejected), fresh context only, and the same restrictions as a Herdr-placed Pi (no local extension paths, process environment, nested delegation, permission rules, or tool budgets).
+
+## Running a Pi child in a Rex pane on another Mac
+
+Name a Mac you reach over SSH in your user settings (`~/.pi/agent/settings.json`), with its repo root:
+
+```json
+{
+  "subagents": {
+    "machines": {
+      "workmac": { "rex": { "ssh": "100.82.67.118" }, "cwd": "~/dev/app" }
+    }
+  }
+}
+```
+
+`machine: "workmac"` then runs a native Pi child as a visible Pi in a new background tab of the Rex session labeled `subagents` on that Mac. pi-subagents creates the session the first time and reuses it after that; if two sessions there have that label, the launch fails until you close or rename one. Every `rex` command runs on that Mac over SSH, and the bridge socket comes back through an SSH forward, so SSH must work without a prompt (`ssh <target>` once to accept the host key). A name with a `rex` entry never looks in the Herdr catalog, so Herdr does not need to be installed.
+
+Only user settings may name a Rex host: a `rex` entry in a project's `.pi/settings.json` fails the launch, so a cloned repo cannot choose where a task runs. `cwd` can come from project or user settings, as for Herdr machines: a relative step `cwd` joins it, and an absolute or `~` path is used as given. The other Mac needs Rex, Pi on its login shell's `PATH`, and pi-subagents installed at the same version. The child edits that Mac's disk, so its changed files come from that Mac's Git state, as for a Herdr-placed child.
+
+Programs in a Rex tab run under the Rex app's macOS privacy permissions. If Pi on that Mac reads files in Desktop, Documents, or Downloads (for example a package path in its settings), allow Rex there first: open a Rex tab on that Mac, run `ls ~/Documents`, and accept the prompt. Until then Pi waits on the prompt and the launch times out.
+
+To watch the tab from this Mac, open the `subagents` session in Rex on that Mac, or add that Mac's Rex server to your hosts here once (`rex hosts add workmac <endpoint>`; after `rex server tailscale on` there, `rex whoami` on that Mac shows its Tailscale address). Tab lifecycle and limits are the same as for `machine: "local"`.
 
 ## Sandboxing background children with a launcher
 
