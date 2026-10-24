@@ -1539,9 +1539,9 @@ export interface Details {
 		argsDigest?: string;
 		/** SHA-256 of the workflow script source (async workflows). */
 		scriptDigest?: string;
-		/** Structured stop cause; set only when the owning extension runtime was replaced. */
-		stopCause?: "runtime-replaced";
-		/** Runtime-replaced workflow run whose finished children this run reused. */
+		/** Structured stop cause: `runtime-replaced` when the owning extension runtime was replaced; `owner-exited` when stale-run reconciliation found the owning Pi process dead. */
+		stopCause?: "runtime-replaced" | "owner-exited";
+		/** Interrupted workflow run whose finished children this run reused. */
 		reusedFrom?: string;
 		resource?: WorkflowResourceProvenance;
 		preflightWarnings?: string[];
@@ -1558,7 +1558,7 @@ export interface Details {
 			generatedLaneKey?: string;
 			warning?: string;
 			error?: string;
-			/** Came from a previous runtime-replaced run of the same script (and args, unless named by options.reuseFrom); this run launched nothing. */
+			/** Came from a previous runtime-replaced or owner-exited run of the same script (and args, unless named by options.reuseFrom); this run launched nothing. */
 			reused?: boolean;
 		}>;
 		emits: unknown[];

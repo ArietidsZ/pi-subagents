@@ -52,6 +52,66 @@ describe("async stale-run reconciliation", () => {
 		assert.equal(checkRecordedPidLiveness({ pid: 4242, bootId: "boot-a" }, { observedScope: undefined, observedBootId: "boot-b", probe: noProbe }), "dead", "an injected probe is skipped too");
 	});
 
+	it("marks a workflow whose Pi process is dead owner-exited, and no other repair", () => {
+		const root = tempRoot("pi-stale-run-owner-exited-");
+		try {
+			const resultsDir = path.join(root, "results");
+			const workflowStatus = (runId: string, extra: Record<string, unknown> = {}) => ({
+				runId,
+				sessionId: "session-owner",
+				mode: "workflow",
+				state: "running",
+				pid: 4242,
+				pidNamespaceScope: "pid:[same]",
+				bootId: "boot-now",
+				startedAt: 1000,
+				lastUpdate: 1000,
+				steps: [{ agent: "echo", status: "running", startedAt: 1000, workflowKey: "stage2" }],
+				workflow: { trace: [], emits: [], console: [], scriptDigest: "digest" },
+				...extra,
+			});
+			const reconcile = (runId: string, status: Record<string, unknown>, options: Parameters<typeof reconcileAsyncRun>[1]) => {
+				const asyncDir = path.join(root, runId);
+				writeStatus(asyncDir, status);
+				const result = reconcileAsyncRun(asyncDir, { resultsDir, pidNamespaceScope: () => "pid:[same]", bootId: () => "boot-now", now: () => 2000, ...options });
+				return { result, status: JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8")) };
+			};
+			const ownerExitedMessage = (runId: string) => `The Pi process (PID 4242) that ran workflow ${runId} exited before the workflow finished. Marked run failed by stale-run reconciliation. Relaunching the same workflow script with the same args from this session reuses finished children and re-attaches to running ones; from another session, add options: { reuseFrom: "${runId}" }.`;
+
+			const dead = reconcile("wf-dead", workflowStatus("wf-dead"), { kill: () => { throw errno("ESRCH"); } });
+			assert.equal(dead.result.repaired, true);
+			assert.equal(dead.status.state, "failed");
+			assert.equal(dead.status.workflow.stopCause, "owner-exited");
+			assert.equal(dead.status.workflow.scriptDigest, "digest");
+			assert.equal(dead.result.message, ownerExitedMessage("wf-dead"));
+			assert.equal(JSON.parse(fs.readFileSync(path.join(resultsDir, "wf-dead.json"), "utf-8")).summary, ownerExitedMessage("wf-dead"));
+
+			const rebooted = reconcile("wf-rebooted", workflowStatus("wf-rebooted", { bootId: "boot-before" }), { kill: () => { throw new Error("the pid must not be probed"); } });
+			assert.equal(rebooted.status.workflow.stopCause, "owner-exited");
+
+			const alive = reconcile("wf-alive", workflowStatus("wf-alive"), { kill: () => true });
+			assert.equal(alive.result.repaired, false);
+			assert.equal(alive.status.workflow.stopCause, undefined);
+
+			const staleAlive = reconcile("wf-stale-alive", workflowStatus("wf-stale-alive"), { kill: () => true, staleAlivePidMs: 500 });
+			assert.equal(staleAlive.status.state, "failed");
+			assert.equal(staleAlive.status.workflow.stopCause, undefined);
+			assert.match(staleAlive.result.message ?? "", /^Async runner PID 4242 is still live; status has not updated/);
+
+			const staleUnknown = reconcile("wf-stale-unknown", workflowStatus("wf-stale-unknown", { pidNamespaceScope: "pid:[container]" }), { kill: () => { throw errno("ESRCH"); }, staleAlivePidMs: 500 });
+			assert.equal(staleUnknown.status.state, "failed");
+			assert.equal(staleUnknown.status.workflow.stopCause, undefined);
+			assert.match(staleUnknown.result.message ?? "", /cannot be probed from this process/);
+
+			const { workflow: _workflow, ...singleStatus } = workflowStatus("single-dead", { mode: "single" });
+			const single = reconcile("single-dead", singleStatus, { kill: () => { throw errno("ESRCH"); } });
+			assert.equal(single.status.workflow, undefined);
+			assert.equal(single.result.message, "Async runner process 4242 exited or disappeared before writing a result. Marked run failed by stale-run reconciliation.");
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("repairs a run whose pid was saved before a reboot, and leaves a same-boot live run alone", () => {
 		const root = tempRoot("pi-stale-run-boot-id-");
 		try {

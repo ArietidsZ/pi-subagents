@@ -13,6 +13,7 @@
 - Skill discovery no longer fails with `ENOTDIR` when a `settings.json` `packages` entry names a single extension file. Thanks to [@tara-marchand](https://github.com/tara-marchand) for #3011.
 - Herdr-placed native Pi children no longer fail their bridge configure step. The bridge read the child's active tools from the event context, which does not carry them, instead of from the Pi API, so it saw no tools and rejected every configuration.
 - A background run or workflow whose process died when the machine restarted no longer shows as running, and holding its capacity slot, for up to a day. A process id saved before the restart could belong to an unrelated process afterwards, so the check said "alive". Pi now saves a boot id next to the process id on Linux and macOS and treats a process id from an earlier boot as dead. Runs started through a `launcher` are not changed.
+- After Pi crashed or was killed while an async workflow ran, relaunching the same workflow ran every child again. The workflow is now marked `stopCause: "owner-exited"` when its session reopens, or when `options.reuseFrom` names it from another session, and a relaunch reuses the children that already finished, the same as after `/reload`. Its failed result now says that the Pi process exited and how to relaunch it. See [docs/workflows.md](docs/workflows.md).
 
 ## [0.81.0] - 2026-10-22
 
