@@ -1033,18 +1033,21 @@ describe("native subagent fleet", () => {
 		}
 	});
 
-	it("prunes the oldest final records beyond the cap but never a running record", () => {
+	it("prunes the oldest final records beyond the cap, and a running record only once its owner is dead", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-foreground-prune-"));
 		try {
 			const resultsDir = path.join(root, "results");
-			const run = (runId: string, status: "running" | "completed"): ForegroundResumeRun => ({ runId, mode: "single", cwd: root, sessionId: "session-current", updatedAt: 100, ...(status === "running" ? { ownerPid: process.pid + 1 } : {}), children: [{ agent: "worker", index: 0, status }] });
-			// Another process's live run is the oldest file; its final save will replace it later.
-			for (const [index, [runId, status]] of ([["running-oldest", "running"], ["final-1", "completed"], ["final-2", "completed"]] as const).entries()) {
-				persistForegroundRun(run(runId, status), { resultsDir });
+			const exited = spawnSync(process.execPath, ["-e", ""]).pid;
+			assert.ok(exited);
+			const run = (runId: string, ownerPid?: number): ForegroundResumeRun => ({ runId, mode: "single", cwd: root, sessionId: "session-current", updatedAt: 100, ...(ownerPid ? { ownerPid } : {}), children: [{ agent: "worker", index: 0, status: ownerPid ? "running" : "completed" }] });
+			// The two oldest files are running records: one whose owner is alive (its final save will
+			// replace it later) and one left by a Pi process that died.
+			for (const [index, [runId, ownerPid]] of ([["running-live", process.pid], ["running-dead", exited], ["final-1", undefined], ["final-2", undefined]] as const).entries()) {
+				persistForegroundRun(run(runId, ownerPid), { resultsDir });
 				fs.utimesSync(foregroundHistoryFile(resultsDir, runId), 1_000 + index, 1_000 + index);
 			}
-			persistForegroundRun(run("final-3", "completed"), { resultsDir, limit: 2 });
-			assert.deepEqual([...savedForegroundRuns(resultsDir).keys()].sort(), ["final-2", "final-3", "running-oldest"]);
+			persistForegroundRun(run("final-3"), { resultsDir, limit: 2 });
+			assert.deepEqual([...savedForegroundRuns(resultsDir).keys()].sort(), ["final-2", "final-3", "running-live"]);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

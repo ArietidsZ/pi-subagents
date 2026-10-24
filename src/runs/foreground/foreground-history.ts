@@ -177,9 +177,10 @@ function pruneHistory(dir: string, limit: number): void {
 	}).sort((left, right) => left.mtimeMs - right.mtimeMs);
 	for (const { name, mtimeMs } of byAge.slice(0, byAge.length - limit)) {
 		const filePath = path.join(dir, name);
-		// A running record is replaced later by its run's final save, possibly in another Pi process.
+		// A running record is replaced later by its run's final save, possibly in another Pi process;
+		// once its owner is confirmed dead nothing can replace it, so it is final.
 		const run = readRunFile(filePath);
-		if (run && hasRunningChild(run)) continue;
+		if (run && hasRunningChild(run) && !ownerConfirmedDead(run)) continue;
 		// A file rewritten since the snapshot is a fresh record, not the old one judged here.
 		try {
 			if (fs.statSync(filePath).mtimeMs !== mtimeMs) continue;
@@ -215,11 +216,15 @@ export function discardRunningForegroundRun(runId: string, options: { resultsDir
 	if (run && hasRunningChild(run) && run.ownerPid === process.pid) fs.rmSync(filePath, { force: true });
 }
 
+function ownerConfirmedDead(run: ForegroundResumeRun): boolean {
+	// readRunFile admits a running child only with a valid ownerPid.
+	return checkRecordedPidLiveness({ pid: run.ownerPid!, pidNamespaceScope: run.ownerPidNamespaceScope, bootId: run.ownerBootId }, { observedScope: currentPidNamespaceScope(), observedBootId: currentBootId() }) === "dead";
+}
+
 /** A run whose owning Pi process is gone loads as stopped and resumable; one whose owner may be alive is not loaded. */
 function restoreInterruptedRun(run: ForegroundResumeRun): ForegroundResumeRun | undefined {
-	// readRunFile admits a running child only with a valid ownerPid.
-	const { ownerPid, ownerPidNamespaceScope, ownerBootId, ...rest } = run;
-	if (checkRecordedPidLiveness({ pid: ownerPid!, pidNamespaceScope: ownerPidNamespaceScope, bootId: ownerBootId }, { observedScope: currentPidNamespaceScope(), observedBootId: currentBootId() }) !== "dead") return undefined;
+	if (!ownerConfirmedDead(run)) return undefined;
+	const { ownerPid: _ownerPid, ownerPidNamespaceScope: _ownerPidNamespaceScope, ownerBootId: _ownerBootId, ...rest } = run;
 	return {
 		...rest,
 		children: run.children.map((child) => {
