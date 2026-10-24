@@ -1273,6 +1273,8 @@ describe("async status helpers", () => {
 			fs.writeFileSync(corruptStatus, corruptBytes);
 			const indexDir = path.join(root, TERMINAL_RUN_INDEX_DIR, encodeIndexSegment("session-a"));
 			const marker = path.join(indexDir, "0000000000000200-terminal-corrupt.json");
+			const aliasMarker = path.join(indexDir, "0000000000000300-terminal-corrupt.json");
+			fs.writeFileSync(aliasMarker, fs.readFileSync(marker));
 			const indexBytes = fs.readFileSync(marker);
 			const list = () => listAsyncRuns(root, { sessionId: "session-a", states: ["complete"], reconcile: false });
 
@@ -1281,9 +1283,11 @@ describe("async status helpers", () => {
 			assert.equal(diagnostics.filter((line) => line.includes("corrupt status")).length, 1);
 			assert.deepEqual(fs.readFileSync(corruptStatus), corruptBytes);
 			assert.deepEqual(fs.readFileSync(marker), indexBytes);
+			assert.deepEqual(fs.readFileSync(aliasMarker), indexBytes);
 			assert.throws(() => listAsyncRuns(root, { runId: "terminal-corrupt", reconcile: false }), /Failed to parse async status file/);
 			assert.deepEqual(fs.readFileSync(corruptStatus), corruptBytes);
 			assert.deepEqual(fs.readFileSync(marker), indexBytes);
+			assert.deepEqual(fs.readFileSync(aliasMarker), indexBytes);
 
 			fs.writeFileSync(corruptStatus, JSON.stringify({
 				runId: "terminal-corrupt",
