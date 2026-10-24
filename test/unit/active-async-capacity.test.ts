@@ -39,6 +39,48 @@ function observedProof(runId: string, runnerProcessInstanceId: string) {
 }
 
 describe("active async capacity", () => {
+	it("reclaims an old failed run whose runner pid was saved before a reboot without probing it", () => {
+		const cases = [
+			{ name: "same namespace", scope: "pid:[1]", releases: true },
+			{ name: "other namespace", scope: "pid:[container]", releases: false },
+		];
+		for (const [index, testCase] of cases.entries()) {
+			const rootDir = tempRoot();
+			const runId = `run-boot-${index}`;
+			const asyncDir = path.join(rootDir, "runs", runId);
+			try {
+				const handle = acquireActiveAsyncCapacity({ sessionId: "session-boot", limit: 1, runId, kind: "runner", asyncDir }, { rootDir });
+				assert.ok(handle);
+				handle.markStarted(`runner-${index}`);
+				writeJson(path.join(asyncDir, "status.json"), {
+					runId,
+					sessionId: "session-boot",
+					mode: "single",
+					state: "failed",
+					pid: 50_100 + index,
+					pidNamespaceScope: testCase.scope,
+					bootId: "boot-before",
+					startedAt: 0,
+					lastActivityAt: 0,
+					processTerminal: { version: 1, state: "unknown", runId, runnerProcessInstanceId: `runner-${index}`, reason: "stale-repair" },
+				});
+				const options = {
+					rootDir,
+					now: () => 10_000,
+					abandonedSlotReleaseAfterMs: 1_000,
+					pidNamespaceScope: () => "pid:[1]",
+					bootId: () => "boot-now",
+					pidLiveness: (): "alive" => { throw new Error("the runner pid must not be probed"); },
+				};
+				const inspection = inspectActiveAsyncCapacityOwner({ runId, sessionId: "session-boot", asyncDir }, options);
+				assert.equal(inspection.release.state, testCase.releases ? "releasable" : "retained", testCase.name);
+				if (!testCase.releases) assert.match(inspection.release.reason, /PID namespace differs/);
+			} finally {
+				fs.rmSync(rootDir, { recursive: true, force: true });
+			}
+		}
+	});
+
 	it("admits exactly to the limit and rolls back only its own unstarted slot", () => {
 		const rootDir = tempRoot();
 		try {

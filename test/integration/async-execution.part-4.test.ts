@@ -1896,6 +1896,8 @@ setTimeout(() => process.exit(90), 15000).unref();
 			const asyncDir = path.join(ASYNC_DIR, id);
 			const asking = await waitForAsyncState(id, (status) => status.currentTool === "contact_supervisor");
 			assert.deepEqual((asking as AsyncStatusPayload & { launcher?: unknown }).launcher, { name: "wrap", argv: runnerLaunchers.wrap });
+			// A launcher may run the runner under another kernel, so its pid never carries Pi's boot id.
+			assert.equal((asking as AsyncStatusPayload & { bootId?: unknown }).bootId, undefined);
 			const wrapperArgv = fs.readFileSync(argvLog, "utf-8").trimEnd().split("\n");
 			assert.equal(wrapperArgv[0], "tag arg");
 			assert.ok(path.isAbsolute(wrapperArgv[1]!), "the wrapper received the resolved runner executable");

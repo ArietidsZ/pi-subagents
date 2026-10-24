@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import { writeAsyncResultFile, writePendingAsyncResultFile } from "../../src/runs/background/result-files.ts";
 import { finalizeProcessTerminal, initializeProcessTerminal, readProcessTerminal } from "../../src/runs/background/process-terminal.ts";
-import { checkPidLiveness, reconcileAsyncRun } from "../../src/runs/background/stale-run-reconciler.ts";
+import { checkPidLiveness, checkRecordedPidLiveness, reconcileAsyncRun } from "../../src/runs/background/stale-run-reconciler.ts";
 import { summarizeAsyncStatus } from "../../src/runs/background/async-status.ts";
 
 function tempRoot(prefix: string): string {
@@ -32,6 +32,63 @@ describe("async stale-run reconciliation", () => {
 		assert.equal(checkPidLiveness(123, () => { throw errno("ESRCH"); }), "dead");
 		assert.equal(checkPidLiveness(123, () => { throw errno("EPERM"); }), "unknown");
 		assert.equal(checkPidLiveness(123, () => { throw new Error("boom"); }), "unknown");
+	});
+
+	it("treats a pid saved under another boot as dead without probing, only when the pid namespaces are comparable", () => {
+		const noProbe = () => { throw new Error("the pid must not be probed"); };
+		const alive = () => true;
+		const cases = [
+			{ name: "other boot, same scope", recorded: { pidNamespaceScope: "pid:[1]", bootId: "boot-a" }, observed: { observedScope: "pid:[1]", observedBootId: "boot-b" }, kill: noProbe, expected: "dead" },
+			{ name: "other boot, neither has a scope", recorded: { bootId: "boot-a" }, observed: { observedScope: undefined, observedBootId: "boot-b" }, kill: noProbe, expected: "dead" },
+			{ name: "other boot, record scope differs", recorded: { pidNamespaceScope: "pid:[1]", bootId: "boot-a" }, observed: { observedScope: "pid:[2]", observedBootId: "boot-b" }, kill: () => { throw errno("ESRCH"); }, expected: "unknown" },
+			{ name: "other boot, only the observer has a scope", recorded: { bootId: "boot-a" }, observed: { observedScope: "pid:[1]", observedBootId: "boot-b" }, kill: alive, expected: "alive" },
+			{ name: "same boot, live pid", recorded: { pidNamespaceScope: "pid:[1]", bootId: "boot-a" }, observed: { observedScope: "pid:[1]", observedBootId: "boot-a" }, kill: alive, expected: "alive" },
+			{ name: "record has no boot id", recorded: { pidNamespaceScope: "pid:[1]" }, observed: { observedScope: "pid:[1]", observedBootId: "boot-b" }, kill: alive, expected: "alive" },
+			{ name: "observer has no boot id", recorded: { pidNamespaceScope: "pid:[1]", bootId: "boot-a" }, observed: { observedScope: "pid:[1]", observedBootId: undefined }, kill: alive, expected: "alive" },
+		];
+		for (const testCase of cases) {
+			assert.equal(checkRecordedPidLiveness({ pid: 4242, ...testCase.recorded }, { ...testCase.observed, kill: testCase.kill }), testCase.expected, testCase.name);
+		}
+		assert.equal(checkRecordedPidLiveness({ pid: 4242, bootId: "boot-a" }, { observedScope: undefined, observedBootId: "boot-b", probe: noProbe }), "dead", "an injected probe is skipped too");
+	});
+
+	it("repairs a run whose pid was saved before a reboot, and leaves a same-boot live run alone", () => {
+		const root = tempRoot("pi-stale-run-boot-id-");
+		try {
+			const status = (runId: string, extra: Record<string, unknown>) => ({
+				runId,
+				mode: "single",
+				state: "running",
+				pid: 4242,
+				pidNamespaceScope: "pid:[same]",
+				startedAt: 1000,
+				lastUpdate: 1000,
+				steps: [{ agent: "worker", status: "running", startedAt: 1000 }],
+				...extra,
+			});
+			const options = { resultsDir: path.join(root, "results"), pidNamespaceScope: () => "pid:[same]", bootId: () => "boot-now", now: () => 2000 };
+
+			const rebooted = path.join(root, "run-rebooted");
+			writeStatus(rebooted, status("run-rebooted", { bootId: "boot-before" }));
+			const repaired = reconcileAsyncRun(rebooted, { ...options, kill: () => { throw new Error("the pid must not be probed"); } });
+			assert.equal(repaired.repaired, true);
+			assert.equal(JSON.parse(fs.readFileSync(path.join(rebooted, "status.json"), "utf-8")).state, "failed");
+
+			const otherNamespace = path.join(root, "run-other-namespace");
+			writeStatus(otherNamespace, status("run-other-namespace", { bootId: "boot-before", pidNamespaceScope: "pid:[container]" }));
+			const unknown = reconcileAsyncRun(otherNamespace, { ...options, kill: () => { throw errno("ESRCH"); } });
+			assert.equal(unknown.repaired, false);
+			assert.equal(JSON.parse(fs.readFileSync(path.join(otherNamespace, "status.json"), "utf-8")).state, "running");
+
+			const sameBoot = path.join(root, "run-same-boot");
+			writeStatus(sameBoot, status("run-same-boot", { bootId: "boot-now" }));
+			const before = fs.readFileSync(path.join(sameBoot, "status.json"), "utf-8");
+			const untouched = reconcileAsyncRun(sameBoot, { ...options, kill: () => true });
+			assert.equal(untouched.repaired, false);
+			assert.equal(fs.readFileSync(path.join(sameBoot, "status.json"), "utf-8"), before);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("repairs a recent Linux zombie only with a verified PID namespace", { skip: process.platform !== "linux", timeout: 10_000 }, async () => {

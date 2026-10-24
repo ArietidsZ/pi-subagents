@@ -6,6 +6,7 @@ import { acquireSessionLease } from "../shared/session-lease.ts";
 import { readProcessTerminalCandidate, writeProcessTerminalCandidate, markProcessTerminalCandidateLeaseRelease } from "./process-terminal-candidate.ts";
 import { persistRunnerStartupFailure } from "./runner-startup-failure.ts";
 import { currentPidNamespaceScope } from "./pid-namespace.ts";
+import { primeBootId } from "./boot-id.ts";
 import type { DefaultChildSessionFactoryOptions } from "../shared/child-session.ts";
 import type { SubagentRunConfig } from "./subagent-runner.ts";
 
@@ -113,6 +114,8 @@ async function waitForStartupControl(controlPath: string, token: string, action:
 export async function runConfiguredSubagent(rawConfig: unknown, options: RunnerBootstrapOptions = {}): Promise<void> {
 	validateSubagentRunConfig(rawConfig);
 	const config = rawConfig;
+	// The runner never reads the boot id from the OS (sysctl on macOS); Pi passes it to direct runners only.
+	primeBootId(typeof config.bootId === "string" && config.bootId ? config.bootId : undefined);
 	let lease: ReturnType<typeof acquireSessionLease> | undefined;
 	let startupCommitted = config.revivalLease === undefined && config.launchBarrierToken === undefined;
 	let executionLoaded = false;

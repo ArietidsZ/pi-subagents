@@ -1961,6 +1961,8 @@ export interface AsyncStatus {
 	pid?: number;
 	/** Linux PID namespace identity used to scope liveness probes. */
 	pidNamespaceScope?: string;
+	/** Boot id of the machine when `pid` was recorded; a different current boot id proves the pid dead. */
+	bootId?: string;
 	cwd?: string;
 	/** User-configured launcher that wrapped the background runner (argv only, never environment). */
 	launcher?: RunnerLauncher;

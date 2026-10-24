@@ -4,7 +4,8 @@ import * as path from "node:path";
 import { writePrivateAtomicJson } from "../../shared/atomic-json.ts";
 import { TEMP_ROOT_DIR, type ActiveAsyncCapacitySnapshot, type AsyncStatus } from "../../shared/types.ts";
 import { readStatus } from "../../shared/utils.ts";
-import { checkPidLiveness, type PidLiveness } from "./stale-run-reconciler.ts";
+import { checkPidLiveness, checkRecordedPidLiveness, type PidLiveness } from "./stale-run-reconciler.ts";
+import { currentBootId } from "./boot-id.ts";
 import { currentPidNamespaceScope } from "./pid-namespace.ts";
 import { readProcessTerminal } from "./process-terminal.ts";
 import { isTerminalAsyncState as terminalState, readWorkflowChildEvidence, readWorkflowChildProcessEvidence } from "./workflow-terminal-proof.ts";
@@ -46,6 +47,7 @@ interface CapacityOptions {
 	abandonedSlotReleaseAfterMs?: number | false;
 	pidLiveness?: (pid: number) => PidLiveness;
 	pidNamespaceScope?: () => string | undefined;
+	bootId?: () => string | undefined;
 	afterSlotRename?: (releasedDir: string) => void;
 	writeOwner?: (filePath: string, owner: ActiveAsyncCapacityOwner) => void;
 }
@@ -257,8 +259,13 @@ function abandonedRunnerReleaseVerdict(status: AsyncStatus, proofState: string, 
 	if (anyTerminalState ? !terminalState(status.state) : status.state !== "failed") return { state: "retained", reason: `${proofReason}; abandoned-timeout policy requires a ${anyTerminalState ? "terminal" : "failed"} run, not ${status.state}` };
 	if (typeof status.pid !== "number" || !Number.isInteger(status.pid) || status.pid < 1) return { state: "retained", reason: `${proofReason}; runner PID is missing or invalid` };
 	// A PID from another namespace can look dead here while the runner is alive.
-	if (status.pidNamespaceScope !== undefined && status.pidNamespaceScope !== (options.pidNamespaceScope ?? currentPidNamespaceScope)()) return { state: "retained", reason: `${proofReason}; runner PID namespace differs from this process, so liveness is unknown` };
-	const liveness = (options.pidLiveness ?? checkPidLiveness)(status.pid);
+	const observedScope = (options.pidNamespaceScope ?? currentPidNamespaceScope)();
+	if (status.pidNamespaceScope !== undefined && status.pidNamespaceScope !== observedScope) return { state: "retained", reason: `${proofReason}; runner PID namespace differs from this process, so liveness is unknown` };
+	const liveness = checkRecordedPidLiveness({ pid: status.pid, pidNamespaceScope: status.pidNamespaceScope, bootId: status.bootId }, {
+		observedScope,
+		observedBootId: (options.bootId ?? currentBootId)(),
+		probe: options.pidLiveness ?? ((pid) => checkPidLiveness(pid)),
+	});
 	if (liveness !== "dead") return { state: "retained", reason: `${proofReason}; runner PID liveness is ${liveness}` };
 	const lastActivityAt = status.lastActivityAt ?? status.lastUpdate ?? status.endedAt;
 	if (typeof lastActivityAt !== "number" || !Number.isFinite(lastActivityAt)) return { state: "retained", reason: `${proofReason}; last activity timestamp is missing or invalid` };

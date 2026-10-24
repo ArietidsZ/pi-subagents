@@ -6,6 +6,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { awaitExistingAsyncRun, claimWorkflowAwaitedResult } from "../../src/runs/background/await-async-run.ts";
+import { resetBootIdForTesting } from "../../src/runs/background/boot-id.ts";
+import { currentPidNamespaceScope } from "../../src/runs/background/pid-namespace.ts";
 import { resultFilesForToolCall, resultPayloadPathForIndexedRun, resultPayloadPathForSessionRun, retireResultSnapshot, withResultRunLease, writeAsyncResultFile, writePendingAsyncResultFile } from "../../src/runs/background/result-files.ts";
 
 let tempDir: string;
@@ -128,6 +130,22 @@ describe("awaitExistingAsyncRun", () => {
 		assert.equal(outcome.status, "unavailable");
 		assert.match(outcome.status === "unavailable" ? outcome.reason : "", /exited without publishing a result/);
 		assert.equal(JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8")).state, "running");
+	});
+
+	it("is unavailable when a live-looking runner pid was saved before a reboot", async () => {
+		const asyncDir = childDir();
+		// This test process is alive, so only the boot id can say the recorded runner is gone.
+		writeStatus(asyncDir, { pid: process.pid, pidNamespaceScope: currentPidNamespaceScope(), bootId: "boot-before" });
+		resetBootIdForTesting(() => "boot-now");
+		try {
+			// Without the boot check the live pid would keep the wait open until this signal fires.
+			const outcome = await awaitExistingAsyncRun(asyncDir, "child-run", AbortSignal.timeout(5_000));
+
+			assert.equal(outcome.status, "unavailable");
+			assert.match(outcome.status === "unavailable" ? outcome.reason : "", /exited without publishing a result/);
+		} finally {
+			resetBootIdForTesting();
+		}
 	});
 
 	it("ends a zombie wait only when the runner's PID namespace is verified", { skip: process.platform !== "linux", timeout: 10_000 }, async () => {

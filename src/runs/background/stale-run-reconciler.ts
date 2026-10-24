@@ -12,6 +12,7 @@ import { nestedSummaryFromAsyncStatus, projectNestedEvents, resolveNestedAsyncDi
 import { assertWorkflowGraphHostSteps } from "../shared/host-step-status.ts";
 import type { RawDrainStatusObserver } from "../shared/readonly-drain-observation.ts";
 import { currentPidNamespaceScope } from "./pid-namespace.ts";
+import { currentBootId } from "./boot-id.ts";
 import { isTerminalAsyncState } from "./workflow-terminal-proof.ts";
 
 export type PidLiveness = "alive" | "dead" | "unknown";
@@ -40,6 +41,7 @@ interface ReconcileAsyncRunOptions {
 	missingStatusGraceMs?: number;
 	staleAlivePidMs?: number;
 	pidNamespaceScope?: () => string | undefined;
+	bootId?: () => string | undefined;
 }
 
 interface ReconcileAsyncRunResult {
@@ -423,6 +425,38 @@ export function checkPidLiveness(pid: number, kill: KillFn = process.kill, probe
 	}
 }
 
+export interface RecordedPid {
+	pid: number;
+	pidNamespaceScope?: string;
+	bootId?: string;
+}
+
+export interface RecordedPidObservation {
+	observedScope: string | undefined;
+	observedBootId: string | undefined;
+	kill?: KillFn;
+	/** Replaces the default `checkPidLiveness` probe. */
+	probe?: (pid: number) => PidLiveness;
+}
+
+/**
+ * Liveness of a pid saved in a status file. A pid saved under another boot is dead without a
+ * probe, but only when both sides are in the same pid namespace or neither records one: a
+ * macOS host reading a Linux container's runs must not compare their boot ids.
+ */
+export function checkRecordedPidLiveness(recorded: RecordedPid, observation: RecordedPidObservation): PidLiveness {
+	const { observedScope, observedBootId } = observation;
+	if (recorded.pidNamespaceScope === observedScope && recorded.bootId && observedBootId && recorded.bootId !== observedBootId) return "dead";
+	// An observer without a scope (macOS/Windows host sharing a container's temp root) cannot match a recorded one.
+	const scopeMismatch = recorded.pidNamespaceScope !== undefined && recorded.pidNamespaceScope !== observedScope;
+	// A local zombie is evidence about this pid only when its namespace is known to match.
+	const scopeVerified = recorded.pidNamespaceScope !== undefined && recorded.pidNamespaceScope === observedScope;
+	const liveness = observation.probe
+		? observation.probe(recorded.pid)
+		: checkPidLiveness(recorded.pid, observation.kill, scopeVerified);
+	return liveness === "dead" && scopeMismatch ? "unknown" : liveness;
+}
+
 export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOptions = {}, observeStatus?: RawDrainStatusObserver): ReconcileAsyncRunResult {
 	const now = options.now?.() ?? Date.now();
 	const status = readStatus(asyncDir);
@@ -486,13 +520,11 @@ export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOp
 		}
 	}
 
-	const observedScope = options.pidNamespaceScope ? options.pidNamespaceScope() : currentPidNamespaceScope();
-	// An observer without a scope (macOS/Windows host sharing a container's temp root) cannot match a recorded one.
-	const pidScopeMismatch = effectiveStatus.pidNamespaceScope !== undefined && effectiveStatus.pidNamespaceScope !== observedScope;
-	// A local zombie is evidence about this runner only when its namespace is known to match.
-	const pidScopeVerified = effectiveStatus.pidNamespaceScope !== undefined && effectiveStatus.pidNamespaceScope === observedScope;
-	const observedLiveness = checkPidLiveness(effectiveStatus.pid, options.kill, pidScopeVerified);
-	const liveness = observedLiveness === "dead" && pidScopeMismatch ? "unknown" : observedLiveness;
+	const liveness = checkRecordedPidLiveness({ pid: effectiveStatus.pid, pidNamespaceScope: effectiveStatus.pidNamespaceScope, bootId: effectiveStatus.bootId }, {
+		kill: options.kill,
+		observedScope: options.pidNamespaceScope ? options.pidNamespaceScope() : currentPidNamespaceScope(),
+		observedBootId: options.bootId ? options.bootId() : currentBootId(),
+	});
 	if (liveness !== "dead") {
 		const staleAfterMs = options.staleAlivePidMs ?? 24 * 60 * 60 * 1000;
 		const lastUpdate = effectiveStatus.lastUpdate ?? effectiveStatus.startedAt;

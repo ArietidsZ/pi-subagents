@@ -12,6 +12,7 @@
 - A host-required child extension (`registerRequiredChildExtensions`) is now recognized when Pi loads it under another spelling of its path, such as a symlink, a case variant, or a path with a Unicode space, so its load, provider-registration and startup failures still stop the launch. A required extension that Pi did not load at all now rejects the launch instead of letting the child start without it. Thanks to [@pandalaohe](https://github.com/pandalaohe) for #3012.
 - Skill discovery no longer fails with `ENOTDIR` when a `settings.json` `packages` entry names a single extension file. Thanks to [@tara-marchand](https://github.com/tara-marchand) for #3011.
 - Herdr-placed native Pi children no longer fail their bridge configure step. The bridge read the child's active tools from the event context, which does not carry them, instead of from the Pi API, so it saw no tools and rejected every configuration.
+- A background run or workflow whose process died when the machine restarted no longer shows as running, and holding its capacity slot, for up to a day. A process id saved before the restart could belong to an unrelated process afterwards, so the check said "alive". Pi now saves a boot id next to the process id on Linux and macOS and treats a process id from an earlier boot as dead. Runs started through a `launcher` are not changed.
 
 ## [0.81.0] - 2026-10-22
 
