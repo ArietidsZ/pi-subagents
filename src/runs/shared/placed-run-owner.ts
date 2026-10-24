@@ -7,7 +7,7 @@ import { getAgentDir } from "../../shared/utils.ts";
 
 export interface PlacedBridgeManifest { socketPath: string; nativeSessionId: string; packageVersion: string; protocol: number }
 
-export async function discoverPlacedBridgeManifest(access: PlacementMachineAccess, runId: string, runtimeDir: string): Promise<PlacedBridgeManifest> {
+export async function discoverPlacedBridgeManifest(access: PlacementMachineAccess, runId: string, runtimeDir: string, missing = "The placed Pi's pi-subagents bridge manifest is not in its runtime directory; the Pi may have exited."): Promise<PlacedBridgeManifest> {
 	const script = `p="$1/manifest.json"; test -f "$p" && test ! -L "$p" && cat "$p"`;
 	for (let attempt = 0; attempt < 100; attempt++) {
 		const result = await access.runAsync(access.shellCommand(script, [runtimeDir]), { timeout: 5_000, maxBuffer: 64 * 1024 });
@@ -20,7 +20,7 @@ export async function discoverPlacedBridgeManifest(access: PlacementMachineAcces
 		}
 		await new Promise((resolve) => setTimeout(resolve, 50));
 	}
-	throw new Error("The placed Pi did not start the pi-subagents bridge, so its pane was closed. Start pi in a new pane on that machine to see why: it may wait on a prompt (such as a macOS folder-access prompt for the terminal app), exit at startup, or not load the same pi-subagents version as an extension.");
+	throw new Error(missing);
 }
 
 export async function createPlacedRuntimeDir(access: PlacementMachineAccess, runId: string): Promise<string> { const result = await access.runAsync(access.shellCommand("umask 077; mktemp -d \"${TMPDIR:-/tmp}/pi-subagents-herdr-$1-XXXXXXXX\"", [runId]), { timeout: 10_000, maxBuffer: 4096 }); if (result.error) throw new Error(`Could not provision a run-private remote bridge runtime directory: ${result.error.message}`, { cause: result.error }); const value = result.stdout.trim(); if (result.status !== 0 || !path.posix.isAbsolute(value) || value.includes("\n")) throw new Error("Could not provision a run-private remote bridge runtime directory."); return value; }

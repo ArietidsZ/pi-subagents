@@ -310,7 +310,7 @@ Only user settings may name a Rex host: a `rex` entry in a project's `.pi/settin
 
 Programs in a Rex tab run under the Rex app's macOS privacy permissions. If Pi on that Mac reads files in Desktop, Documents, or Downloads (for example a package path in its settings), allow Rex there first: open a Rex tab on that Mac, run `ls ~/Documents`, and accept the prompt. Until then Pi waits on the prompt and the launch times out.
 
-To watch the tab from this Mac, open the `subagents` session in Rex on that Mac, or add that Mac's Rex server to your hosts here once (`rex hosts add workmac <endpoint>`; after `rex server tailscale on` there, `rex whoami` on that Mac shows its Tailscale address). Tab lifecycle and limits are the same as for `machine: "local"`.
+To watch the tab, open the `subagents` session in Rex on that Mac. To watch it from this Mac, add that Mac's Rex server to your hosts here once (`rex hosts add workmac <endpoint>`; after `rex server tailscale on` there, `rex whoami` on that Mac shows its Tailscale address). Tab lifecycle and limits are the same as for `machine: "local"`.
 
 ## Sandboxing background children with a launcher
 
