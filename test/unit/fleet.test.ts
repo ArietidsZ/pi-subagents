@@ -1033,6 +1033,23 @@ describe("native subagent fleet", () => {
 		}
 	});
 
+	it("prunes the oldest final records beyond the cap but never a running record", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-foreground-prune-"));
+		try {
+			const resultsDir = path.join(root, "results");
+			const run = (runId: string, status: "running" | "completed"): ForegroundResumeRun => ({ runId, mode: "single", cwd: root, sessionId: "session-current", updatedAt: 100, ...(status === "running" ? { ownerPid: process.pid + 1 } : {}), children: [{ agent: "worker", index: 0, status }] });
+			// Another process's live run is the oldest file; its final save will replace it later.
+			for (const [index, [runId, status]] of ([["running-oldest", "running"], ["final-1", "completed"], ["final-2", "completed"]] as const).entries()) {
+				persistForegroundRun(run(runId, status), { resultsDir });
+				fs.utimesSync(foregroundHistoryFile(resultsDir, runId), 1_000 + index, 1_000 + index);
+			}
+			persistForegroundRun(run("final-3", "completed"), { resultsDir, limit: 2 });
+			assert.deepEqual([...savedForegroundRuns(resultsDir).keys()].sort(), ["final-2", "final-3", "running-oldest"]);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("saves each foreground run to its own file without rewriting another process's record", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-foreground-own-file-"));
 		try {

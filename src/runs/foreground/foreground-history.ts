@@ -164,7 +164,7 @@ function sortAndBound(runs: ForegroundResumeRun[], limit: number): ForegroundRes
 	return [...runs].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, limit);
 }
 
-/** Deletes the oldest run files beyond the cap, judged by mtime so no record has to be read. */
+/** Deletes the oldest final run files beyond the cap; running records stay, so the cap can be exceeded while runs are live. */
 function pruneHistory(dir: string, limit: number): void {
 	const files = historyFiles(dir);
 	if (files.length <= limit) return;
@@ -175,7 +175,19 @@ function pruneHistory(dir: string, limit: number): void {
 			return [];
 		}
 	}).sort((left, right) => left.mtimeMs - right.mtimeMs);
-	for (const { name } of byAge.slice(0, byAge.length - limit)) fs.rmSync(path.join(dir, name), { force: true });
+	for (const { name, mtimeMs } of byAge.slice(0, byAge.length - limit)) {
+		const filePath = path.join(dir, name);
+		// A running record is replaced later by its run's final save, possibly in another Pi process.
+		const run = readRunFile(filePath);
+		if (run && hasRunningChild(run)) continue;
+		// A file rewritten since the snapshot is a fresh record, not the old one judged here.
+		try {
+			if (fs.statSync(filePath).mtimeMs !== mtimeMs) continue;
+		} catch {
+			continue;
+		}
+		fs.rmSync(filePath, { force: true });
+	}
 }
 
 /**
