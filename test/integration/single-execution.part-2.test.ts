@@ -76,6 +76,13 @@ import { registerRequiredChildExtensions } from "../../src/api/required-child-ex
 import { createStructuredOutputRuntime } from "../../src/runs/shared/structured-output.ts";
 import { ensureSupervisorChannelDir, resolveSupervisorChannelDir } from "../../src/intercom/native-supervisor-channel.ts";
 
+/** Every saved foreground run: one file each under results/foreground-history. */
+function savedForegroundRuns<T>(): T[] {
+	const dir = path.join(DIRS.results, "foreground-history");
+	const names = fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith(".json")) : [];
+	return names.map((name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf-8")) as T);
+}
+
 describe("single sync execution", { skip: !available ? "pi packages not available" : undefined }, () => {
 	installSingleExecutionHooks();
 
@@ -932,8 +939,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 				const settleDeadline = Date.now() + 10_000;
 				while (!child?.settled && Date.now() < settleDeadline) await new Promise((resolve) => setTimeout(resolve, 20));
 				await new Promise((resolve) => setTimeout(resolve, 200));
-				const history = JSON.parse(fs.readFileSync(path.join(DIRS.results, "foreground-history.json"), "utf-8")) as { runs: Array<{ runId: string; children: Array<{ status: string; error?: string }> }> };
-				const recorded = history.runs.find((run) => run.runId === runId)?.children[0];
+				const recorded = savedForegroundRuns<{ runId: string; children: Array<{ status: string; error?: string }> }>().find((run) => run.runId === runId)?.children[0];
 				assert.equal(recorded?.status, "stopped");
 				assert.match(recorded?.error ?? "", /runtime that ran it was replaced/);
 				assert.doesNotMatch(JSON.stringify(child?.session?.messages ?? []), /finished after replacement/);
@@ -959,13 +965,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		mockPi.onCall({ matchArgIncludes: `Single ${nonce}`, waitForPath: release, output: "single done" });
 		mockPi.onCall({ matchArgIncludes: `Workflow child ${nonce}`, waitForPath: release, output: "child done" });
 		type HistoryRun = { runId: string; updatedAt: number; ownerPid?: number; ownerPidNamespaceScope?: string; ownerBootId?: string; parentWorkflowRunId?: string; children: Array<{ status: string; sessionFile?: string }> };
-		const historyRuns = (): HistoryRun[] => {
-			try {
-				return (JSON.parse(fs.readFileSync(path.join(DIRS.results, "foreground-history.json"), "utf-8")) as { runs: HistoryRun[] }).runs;
-			} catch {
-				return [];
-			}
-		};
+		const historyRuns = () => savedForegroundRuns<HistoryRun>();
 		const waitForRecord = async (label: string, predicate: (run: HistoryRun) => boolean): Promise<HistoryRun> => {
 			for (const deadline = Date.now() + 15_000; Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 20))) {
 				const run = historyRuns().find(predicate);
@@ -1008,14 +1008,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		const nonce = `foreground-running-abort-${Date.now()}`;
 		const startedAt = Date.now();
 		mockPi.onCall({ matchArgIncludes: `Abort ${nonce}`, hangUntilAbort: true });
-		const historyFile = path.join(DIRS.results, "foreground-history.json");
-		const runningRecord = () => {
-			try {
-				return (JSON.parse(fs.readFileSync(historyFile, "utf-8")) as { runs: Array<{ runId: string; updatedAt: number; children: Array<{ status: string }> }> }).runs.find((run) => run.updatedAt >= startedAt && run.children[0]?.status === "running");
-			} catch {
-				return undefined;
-			}
-		};
+		const runningRecord = () => savedForegroundRuns<{ runId: string; updatedAt: number; children: Array<{ status: string }> }>().find((run) => run.updatedAt >= startedAt && run.children[0]?.status === "running");
 		const controller = new AbortController();
 		const executor = makeExecutor([makeAgent("echo")]);
 		const pending = executor.execute(`${nonce}-single`, { agent: "echo", task: `Abort ${nonce}`, async: false }, controller.signal, undefined, makeMinimalCtx(tempDir));
@@ -1024,7 +1017,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		assert.ok(running, "the run saved a running record");
 		controller.abort();
 		await pending.catch(() => undefined);
-		const after = (JSON.parse(fs.readFileSync(historyFile, "utf-8")) as { runs: Array<{ runId: string; children: Array<{ status: string }> }> }).runs.find((run) => run.runId === running.runId);
+		const after = savedForegroundRuns<{ runId: string; children: Array<{ status: string }> }>().find((run) => run.runId === running.runId);
 		assert.notEqual(after?.children[0]?.status ?? "removed", "running", "an aborted run never stays running in history");
 	});
 

@@ -17,7 +17,7 @@ import {
 	updateForegroundChild,
 } from "./foreground-control.ts";
 import { getLivePromptAudit, rewritePromptWithGuidance, updateLiveEffectivePrompt } from "./prompt-audit.ts";
-import { discardRunningForegroundRun, persistForegroundRunHistory, persistRunningForegroundRun, MAX_REMEMBERED_FOREGROUND_RUNS } from "./foreground-history.ts";
+import { discardRunningForegroundRun, persistForegroundRun, MAX_REMEMBERED_FOREGROUND_RUNS } from "./foreground-history.ts";
 import { projectScopeRequiresTrustMessage, resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { handleManagementAction } from "../../agents/agent-management.ts";
 import { handleRefinementAction } from "../../agents/agent-refinements.ts";
@@ -754,9 +754,11 @@ function trimRememberedForegroundRuns(state: SubagentState): void {
 	}
 }
 
-function persistRememberedForegroundRuns(state: SubagentState): void {
+function persistRememberedForegroundRun(state: SubagentState, runId: string): void {
+	const run = state.foregroundRuns?.get(runId);
+	if (!run) return;
 	try {
-		persistForegroundRunHistory(state);
+		persistForegroundRun(run);
 	} catch (error) {
 		console.error("Failed to persist foreground run history:", error);
 	}
@@ -849,17 +851,17 @@ function rememberForegroundRun(state: SubagentState, input: RememberedForeground
 		}),
 	});
 	trimRememberedForegroundRuns(state);
-	persistRememberedForegroundRuns(state);
+	persistRememberedForegroundRun(state, input.runId);
 }
 
 /**
- * Saves a starting single run to the history file only, so a Pi exit before the run ends leaves a
+ * Saves a starting single run to its history file only, so a Pi exit before the run ends leaves a
  * record that loads as stopped and resumable. The final save replaces it by run id.
  */
 function rememberRunningForegroundRun(input: RememberedForegroundRunInput & { child: Partial<SingleResult> & Pick<SingleResult, "agent">; parentWorkflowRunId?: string }): void {
 	const updatedAt = Date.now();
 	try {
-		persistRunningForegroundRun({
+		persistForegroundRun({
 			runId: input.runId,
 			mode: "single",
 			cwd: input.cwd,
@@ -948,7 +950,7 @@ function updateRememberedForegroundChild(state: SubagentState, input: { runId: s
 		...(input.result.capabilityAudit ? { capabilityAudit: input.result.capabilityAudit } : {}),
 	});
 	trimRememberedForegroundRuns(state);
-	persistRememberedForegroundRuns(state);
+	persistRememberedForegroundRun(state, input.runId);
 	const output = getSingleResultOutput(input.result).trim();
 	const success = terminalStatus === "completed";
 	const summary = !success && input.result.error

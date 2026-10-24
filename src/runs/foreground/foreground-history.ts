@@ -9,20 +9,20 @@ import { validateModelResponseAliases } from "../../shared/model-response-aliase
 import { checkRecordedPidLiveness } from "../background/stale-run-reconciler.ts";
 import { currentPidNamespaceScope } from "../background/pid-namespace.ts";
 import { currentBootId } from "../background/boot-id.ts";
+import { encodeIndexSegment } from "../background/index-segment.ts";
 
 export const MAX_REMEMBERED_FOREGROUND_RUNS = 50;
 export const FOREGROUND_OWNER_EXITED_STOP_ERROR = "Subagent stopped because the Pi process that ran it exited before the run finished.";
-const HISTORY_VERSION = 1;
 const MAX_INLINE_OUTPUT_BYTES = 64 * 1024;
 const MAX_RESUME_CONTRACT_BYTES = 64 * 1024;
 
-interface ForegroundHistoryIndex {
-	version: 1;
-	runs: ForegroundResumeRun[];
+// One file per run, so Pi processes sharing the results dir never rewrite each other's records.
+function historyDir(resultsDir: string): string {
+	return path.join(resultsDir, "foreground-history");
 }
 
-function historyPath(resultsDir: string): string {
-	return path.join(resultsDir, "foreground-history.json");
+function runHistoryPath(resultsDir: string, runId: string): string {
+	return path.join(historyDir(resultsDir), `${encodeIndexSegment(runId)}.json`);
 }
 
 function boundedTail(value: string): string {
@@ -122,17 +122,21 @@ function compactRun(run: ForegroundResumeRun): ForegroundResumeRun | undefined {
 	};
 }
 
-function readIndex(resultsDir: string): ForegroundHistoryIndex {
-	const filePath = historyPath(resultsDir);
-	if (!fs.existsSync(filePath)) return { version: HISTORY_VERSION, runs: [] };
+/** One saved run, or undefined when the file is missing, unreadable or invalid. */
+function readRunFile(filePath: string): ForegroundResumeRun | undefined {
 	try {
 		const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as unknown;
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { version: HISTORY_VERSION, runs: [] };
-		const record = parsed as Partial<ForegroundHistoryIndex>;
-		if (record.version !== HISTORY_VERSION || !Array.isArray(record.runs)) return { version: HISTORY_VERSION, runs: [] };
-		return { version: HISTORY_VERSION, runs: record.runs.filter(isRestorableRun) };
+		return isRestorableRun(parsed) ? parsed : undefined;
 	} catch {
-		return { version: HISTORY_VERSION, runs: [] };
+		return undefined;
+	}
+}
+
+function historyFiles(dir: string): string[] {
+	try {
+		return fs.readdirSync(dir).filter((name) => name.endsWith(".json"));
+	} catch {
+		return [];
 	}
 }
 
@@ -160,44 +164,48 @@ function sortAndBound(runs: ForegroundResumeRun[], limit: number): ForegroundRes
 	return [...runs].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, limit);
 }
 
-export function persistForegroundRunHistory(state: SubagentState, options: { resultsDir?: string; limit?: number } = {}): void {
-	const resultsDir = options.resultsDir ?? DIRS.results;
-	const limit = options.limit ?? MAX_REMEMBERED_FOREGROUND_RUNS;
-	const existing = readIndex(resultsDir);
-	const merged = new Map(existing.runs.map((run) => [run.runId, run]));
-	for (const run of state.foregroundRuns?.values() ?? []) {
-		const compact = compactRun(run);
-		if (compact) merged.set(compact.runId, compact);
-	}
-	const runs = sortAndBound([...merged.values()], limit);
-	writePrivateAtomicJson(historyPath(resultsDir), { version: HISTORY_VERSION, runs });
+/** Deletes the oldest run files beyond the cap, judged by mtime so no record has to be read. */
+function pruneHistory(dir: string, limit: number): void {
+	const files = historyFiles(dir);
+	if (files.length <= limit) return;
+	const byAge = files.flatMap((name) => {
+		try {
+			return [{ name, mtimeMs: fs.statSync(path.join(dir, name)).mtimeMs }];
+		} catch {
+			return [];
+		}
+	}).sort((left, right) => left.mtimeMs - right.mtimeMs);
+	for (const { name } of byAge.slice(0, byAge.length - limit)) fs.rmSync(path.join(dir, name), { force: true });
 }
 
 /**
- * Saves a foreground run that is starting, so it can be resumed if this Pi process dies before
- * the run ends. The record goes to the history file only; the final save replaces it by run id.
+ * Saves one foreground run to its own history file. A run with a `running` child is a launch-time
+ * record; the run's final save replaces it.
  */
-export function persistRunningForegroundRun(run: ForegroundResumeRun, options: { resultsDir?: string; limit?: number } = {}): void {
+export function persistForegroundRun(run: ForegroundResumeRun, options: { resultsDir?: string; limit?: number } = {}): void {
 	const compact = compactRun(run);
 	if (!compact) return;
 	const resultsDir = options.resultsDir ?? DIRS.results;
-	const merged = new Map(readIndex(resultsDir).runs.map((existing) => [existing.runId, existing]));
-	merged.set(compact.runId, compact);
-	writePrivateAtomicJson(historyPath(resultsDir), { version: HISTORY_VERSION, runs: sortAndBound([...merged.values()], options.limit ?? MAX_REMEMBERED_FOREGROUND_RUNS) });
+	const dir = historyDir(resultsDir);
+	if (!fs.existsSync(dir)) {
+		fs.mkdirSync(dir, { recursive: true });
+		// The single shared file used before per-run files is not read or migrated.
+		fs.rmSync(path.join(resultsDir, "foreground-history.json"), { force: true });
+	}
+	writePrivateAtomicJson(runHistoryPath(resultsDir, compact.runId), compact);
+	pruneHistory(dir, options.limit ?? MAX_REMEMBERED_FOREGROUND_RUNS);
 }
 
 /** Drops this process's `running` record for a launch that threw, so it never loads as interrupted. */
 export function discardRunningForegroundRun(runId: string, options: { resultsDir?: string } = {}): void {
-	const resultsDir = options.resultsDir ?? DIRS.results;
-	const index = readIndex(resultsDir);
-	const runs = index.runs.filter((run) => !(run.runId === runId && hasRunningChild(run) && run.ownerPid === process.pid));
-	if (runs.length === index.runs.length) return;
-	writePrivateAtomicJson(historyPath(resultsDir), { version: HISTORY_VERSION, runs });
+	const filePath = runHistoryPath(options.resultsDir ?? DIRS.results, runId);
+	const run = readRunFile(filePath);
+	if (run && hasRunningChild(run) && run.ownerPid === process.pid) fs.rmSync(filePath, { force: true });
 }
 
 /** A run whose owning Pi process is gone loads as stopped and resumable; one whose owner may be alive is not loaded. */
 function restoreInterruptedRun(run: ForegroundResumeRun): ForegroundResumeRun | undefined {
-	// readIndex admits a running child only with a valid ownerPid.
+	// readRunFile admits a running child only with a valid ownerPid.
 	const { ownerPid, ownerPidNamespaceScope, ownerBootId, ...rest } = run;
 	if (checkRecordedPidLiveness({ pid: ownerPid!, pidNamespaceScope: ownerPidNamespaceScope, bootId: ownerBootId }, { observedScope: currentPidNamespaceScope(), observedBootId: currentBootId() }) !== "dead") return undefined;
 	return {
@@ -227,8 +235,9 @@ export function foregroundChildStateLabel(run: Pick<ForegroundResumeRun, "runId"
 export function restoreForegroundRunHistory(state: SubagentState, options: { resultsDir?: string; sessionId?: string | null; limit?: number } = {}): number {
 	const sessionId = options.sessionId ?? state.currentSessionId;
 	if (!sessionId) return 0;
-	const index = readIndex(options.resultsDir ?? DIRS.results);
-	const runs = sortAndBound(index.runs.filter((run) => run.sessionId === sessionId), options.limit ?? MAX_REMEMBERED_FOREGROUND_RUNS);
+	const dir = historyDir(options.resultsDir ?? DIRS.results);
+	const saved = historyFiles(dir).flatMap((name) => readRunFile(path.join(dir, name)) ?? []);
+	const runs = sortAndBound(saved.filter((run) => run.sessionId === sessionId), options.limit ?? MAX_REMEMBERED_FOREGROUND_RUNS);
 	state.foregroundRuns ??= new Map();
 	let restored = 0;
 	for (const run of runs) {
