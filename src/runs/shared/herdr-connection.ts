@@ -25,6 +25,8 @@ export class HerdrRpcError extends Error {
 }
 export class HerdrTransportError extends Error { constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = "HerdrTransportError"; } }
 export interface HerdrForwardedConnection { endpoint: HerdrEndpoint; socketPath: string; client: HerdrRpcClient; forwardRemoteSocket(remotePath: string, name: string): Promise<{ socketPath: string; close(): Promise<void> }>; close(): Promise<void> }
+/** The only part of a machine reference SSH transport uses. */
+export type SshTarget = Pick<HerdrMachineReference, "target">;
 export function decodeHerdrJsonLine(line: Buffer): unknown { try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line)) as unknown; } catch { throw new Error("Herdr emitted malformed JSON or UTF-8."); } }
 
 export function shellQuoteRemote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
@@ -32,9 +34,9 @@ export function remoteShellCommand(script: string, args: string[] = []): string 
 function canonicalHerdrSession(session: string | null | undefined): string | null { return session && session !== "default" ? session : null; }
 function sshEnvCommand(session: string | undefined, command: string): string { const selected = canonicalHerdrSession(session), assignment = selected ? ` HERDR_SESSION=${shellQuoteRemote(selected)}` : ""; return `/usr/bin/env -u HERDR_SOCKET_PATH -u HERDR_SESSION${assignment} ${remoteShellCommand(command)}`; }
 
-export function runHerdrRemoteCommand(machine: HerdrMachineReference, command: string, options: { sshBin?: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number } = {}) { return spawnSync(options.sshBin ?? "ssh", [...herdrSshArgs(options.env), machine.target, command], { encoding: "utf8", env: hardenedSshEnv(options.env), timeout: options.timeout ?? 15_000, maxBuffer: options.maxBuffer ?? MAX_DISCOVERY_BYTES, windowsHide: true }); }
+export function runHerdrRemoteCommand(machine: SshTarget, command: string, options: { sshBin?: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number } = {}) { return spawnSync(options.sshBin ?? "ssh", [...herdrSshArgs(options.env), machine.target, command], { encoding: "utf8", env: hardenedSshEnv(options.env), timeout: options.timeout ?? 15_000, maxBuffer: options.maxBuffer ?? MAX_DISCOVERY_BYTES, windowsHide: true }); }
 
-export function runHerdrRemoteCommandAsync(machine: HerdrMachineReference, command: string, options: { sshBin?: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number } = {}): Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }> {
+export function runHerdrRemoteCommandAsync(machine: SshTarget, command: string, options: { sshBin?: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number } = {}): Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }> {
 	return runBoundedCommand(options.sshBin ?? "ssh", [...herdrSshArgs(options.env), machine.target, command], { env: hardenedSshEnv(options.env), timeout: options.timeout, maxBuffer: options.maxBuffer });
 }
 
@@ -122,7 +124,7 @@ async function waitForSocket(socketPath: string, child: ChildProcess): Promise<v
 }
 async function terminateChild(child: ChildProcess): Promise<void> { const wait = (ms: number) => child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : Promise.race([new Promise<void>((resolve) => child.once("exit", () => resolve())), new Promise<void>((resolve) => setTimeout(resolve, ms))]); if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); await wait(1_000); if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await wait(1_000); } }
 
-function openSshSockets(machine: HerdrMachineReference, options: { sshBin?: string; env?: NodeJS.ProcessEnv }): PlacementSockets {
+function openSshSockets(machine: SshTarget, options: { sshBin?: string; env?: NodeJS.ProcessEnv }): PlacementSockets {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-herdr-")); fs.chmodSync(dir, 0o700);
 	const children = new Set<ChildProcess>();
 	const forward = async (remotePath: string, name: string) => {
@@ -137,7 +139,7 @@ function openSshSockets(machine: HerdrMachineReference, options: { sshBin?: stri
 }
 
 /** SSH machine access: hardened ssh commands and StreamLocal forwards that share one private local directory per socket scope. */
-export function sshMachineAccess(machine: HerdrMachineReference, options: { sshBin?: string; env?: NodeJS.ProcessEnv } = {}): PlacementMachineAccess {
+export function sshMachineAccess(machine: SshTarget, options: { sshBin?: string; env?: NodeJS.ProcessEnv } = {}): PlacementMachineAccess {
 	return { shellCommand: remoteShellCommand, run: (command, limits = {}) => runHerdrRemoteCommand(machine, command, { ...options, ...limits }), runAsync: (command, limits = {}) => runHerdrRemoteCommandAsync(machine, command, { ...options, ...limits }), openSockets: () => openSshSockets(machine, options) };
 }
 

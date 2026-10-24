@@ -7,6 +7,7 @@
 
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { MockPi } from "../support/helpers.ts";
@@ -16,7 +17,7 @@ import { buildRunnerChildLaunch } from "../../src/runs/background/runner-child-l
 import { childSessionFactory, createDefaultChildSessionFactory, disposeChildSessions, type ChildSessionFactory, type ChildSessionLaunch, type PiCodingAgentModule } from "../../src/runs/shared/child-session.ts";
 import { createNestedRoute } from "../../src/runs/shared/nested-events.ts";
 import { createStructuredOutputRuntime } from "../../src/runs/shared/structured-output.ts";
-import type { ForegroundChildSessionControls, SingleResult } from "../../src/shared/types.ts";
+import type { ForegroundChildSessionControls, PlacementMachineReference, SingleResult } from "../../src/shared/types.ts";
 
 async function waitFor(read: () => boolean, timeoutMs = 5_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
@@ -105,6 +106,23 @@ describe("in-process foreground child", () => {
 		mockPi.onCall({ output: "done" }); const base = childSessionFactory(); const wrapped: ChildSessionFactory = { async create(input) { const child = await base.create(input); Object.defineProperty(child, "machineEvidence", { value: { provider: "herdr", machineId: "remote-machine", initial: { head: "aaa", dirty: false }, final: { head: "bbb", dirty: true } } }); return child; }, dispose: () => base.dispose() };
 		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Task", { runId: "native-git-evidence", waitToolEnabled: false, childSessionFactory: wrapped });
 		assert.deepEqual(result.nativeMachine, { provider: "herdr", machineId: "remote-machine", initialGit: { head: "aaa", dirty: false }, finalGit: { head: "bbb", dirty: true } });
+	});
+
+	it("counts this disk's Git changes only for a machine 'local' child", async () => {
+		const repo = path.join(tempDir, "repo"), file = path.join(repo, "input.md"); fs.mkdirSync(repo);
+		const git = (...args: string[]) => assert.equal(spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd: repo }).status, 0);
+		fs.writeFileSync(file, "input\n"); git("init", "-q"); git("add", "."); git("commit", "-qm", "init");
+		// The remote paths match the local repo, as when both Macs keep code at the same home path; only 'local' may count its changes.
+		const machines: Record<string, PlacementMachineReference> = { local: { provider: "rex", id: "local", session: "session:s", cwd: repo }, rexSsh: { provider: "rex", id: "workmac", target: "100.82.67.118", cwd: repo }, herdr: { provider: "herdr", id: "h1", target: "100.82.67.118", cwd: repo } };
+		const changed: Record<string, string[] | undefined> = {};
+		for (const [name, machine] of Object.entries(machines)) {
+			fs.writeFileSync(file, "input\n");
+			mockPi.onCall({ writeFiles: [{ path: file, content: "changed\n" }], hangUntilAbort: true });
+			const base = childSessionFactory(); const wrapped: ChildSessionFactory = { async create(input) { const child = await base.create({ ...input, machine: undefined }); Object.defineProperty(child, "machineEvidence", { value: { provider: machine.provider, machineId: machine.id, initial: { head: "aaa", dirty: false }, final: { head: "aaa", dirty: false } } }); return child; }, dispose: () => base.dispose() };
+			const result = await runSync(repo, makeAgentConfigs(["echo"]), "echo", "Task", { runId: `git-evidence-${name}`, timeoutMs: 500, machine, waitToolEnabled: false, childSessionFactory: wrapped });
+			changed[name] = result.timeoutRecovery?.changedFiles;
+		}
+		assert.deepEqual(changed, { local: ["input.md"], rexSsh: [], herdr: [] });
 	});
 
 	it("adds the fanout hook and nested route only for fanout-authorized children", async () => {

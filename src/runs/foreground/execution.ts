@@ -109,6 +109,7 @@ import { buildInProcessChildLaunch, createReportedChildSessionInput } from "../s
 import { childSessionFactory, childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent } from "../shared/child-session.ts";
 import { reconcileAttemptUsage } from "../shared/usage-reconciliation.ts";
 import { clearProviderRetry, observeProviderDiagnostics, snapshotProviderDiagnostics } from "../../shared/provider-diagnostics.ts";
+import { isRexLocalMachine } from "../shared/rex-machine.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
@@ -553,8 +554,9 @@ async function runSingleAttempt(
 		return result;
 	}
 	// A machine 'local' child edits this disk, so its local Git evidence is authoritative, as for an unplaced run.
-	const mutationCwd = options.machine?.provider === "rex" ? options.machine.cwd : options.cwd ?? runtimeCwd;
-	const mutationSnapshot = options.machine?.provider === "herdr" ? { source: "tracked-files" as const, trackedOnly: true as const, cwd: mutationCwd, dirtyFiles: [], fingerprints: {}, unavailable: "Local Git evidence is not authoritative for a pane-native remote run." } : snapshotTrackedMutations(mutationCwd);
+	const localGitEvidence = !options.machine || isRexLocalMachine(options.machine);
+	const mutationCwd = isRexLocalMachine(options.machine) ? options.machine.cwd : options.cwd ?? runtimeCwd;
+	const mutationSnapshot = !localGitEvidence ? { source: "tracked-files" as const, trackedOnly: true as const, cwd: mutationCwd, dirtyFiles: [], fingerprints: {}, unavailable: "Local Git evidence is not authoritative for a pane-native remote run." } : snapshotTrackedMutations(mutationCwd);
 	let structuredOutputToolInvoked = false;
 	let structuredOutputMessageStartIndex: number | undefined;
 	let toolAvailabilityError: string | undefined;
@@ -1590,7 +1592,7 @@ async function runSingleAttempt(
 		durationMs: progress.durationMs,
 	};
 	const remoteGitChanged = result.nativeMachine?.initialGit && result.nativeMachine.finalGit ? result.nativeMachine.initialGit.head !== result.nativeMachine.finalGit.head || result.nativeMachine.initialGit.dirty !== result.nativeMachine.finalGit.dirty : undefined;
-	const mutationEvidence = result.nativeMachine && result.nativeMachine.provider !== "rex" ? { source: "tracked-files" as const, trackedOnly: true as const, changedFiles: [], attemptedMutation: remoteGitChanged === true, ...(remoteGitChanged === undefined ? { unavailable: "Remote Git before/after evidence was incomplete." } : {}) } : collectTrackedMutationEvidence(mutationSnapshot, mutationCwd);
+	const mutationEvidence = result.nativeMachine && !isRexLocalMachine(options.machine) ? { source: "tracked-files" as const, trackedOnly: true as const, changedFiles: [], attemptedMutation: remoteGitChanged === true, ...(remoteGitChanged === undefined ? { unavailable: "Remote Git before/after evidence was incomplete." } : {}) } : collectTrackedMutationEvidence(mutationSnapshot, mutationCwd);
 
 	const acceptanceOutput = getFinalOutput(result.messages ?? []);
 	const structuredText = result.structuredOutput === undefined ? undefined : JSON.stringify(result.structuredOutput, null, 2);

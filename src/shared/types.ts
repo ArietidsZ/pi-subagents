@@ -1799,13 +1799,23 @@ export interface HerdrMachineReference {
 }
 
 /** `machine: "local"`: a Rex pane in the parent's own Rex session on this machine. `session` is the Rex session id and `server` the Rex server address, both recorded in the parent at resolution time; `cwd` is the local launch directory. */
-export interface RexMachineReference {
+export interface RexLocalMachineReference {
 	provider: "rex";
 	id: "local";
 	session: string;
 	server?: string;
 	cwd: string;
 }
+
+/** A Rex machine reached over SSH, named in user settings (`subagents.machines.<id>.rex.ssh`). The pane opens in that machine's Rex session labeled `subagents`, found or created at launch and recorded with the run; `cwd` is the directory on that machine. */
+export interface RexSshMachineReference {
+	provider: "rex";
+	id: string;
+	target: string;
+	cwd: string;
+}
+
+export type RexMachineReference = RexLocalMachineReference | RexSshMachineReference;
 
 /** Where a placed native Pi child runs. */
 export type PlacementMachineReference = HerdrMachineReference | RexMachineReference;

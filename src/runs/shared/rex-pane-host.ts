@@ -2,16 +2,20 @@ import { createHash } from "node:crypto";
 import * as path from "node:path";
 import { Type, type StaticEncode, type TSchema } from "typebox";
 import { Compile, type Validator } from "typebox/compile";
-import type { PlacementMachineReference, RexMachineReference } from "../../shared/types.ts";
+import type { PlacementMachineReference, RexMachineReference, RexSshMachineReference } from "../../shared/types.ts";
+import { remoteShellCommand, sshMachineAccess } from "./herdr-connection.ts";
 import type { HerdrRunIdentity } from "./herdr-placed-run.ts";
 import { localMachineAccess } from "./local-machine-access.ts";
 import { getPiSpawnCommand } from "./pi-spawn.ts";
 import { createPlacedRuntimeDir, PlacedRunOwner, removePlacedRuntimeDir } from "./placed-run-owner.ts";
-import type { PlacementCommandResult, PlacementEvidenceProof, PlacementMachineAccess, PlacementOwnedPane, PlacementPaneHost, PlacementReconnectCheck, PlacementSockets } from "./placement-host.ts";
-import { REX_EXIT_GONE, REX_EXIT_UNREACHABLE, resolveRexBinary, rexCommandEnv } from "./rex-machine.ts";
+import { withHerdrPaneAllocationLock, type PlacementCommandResult, type PlacementEvidenceProof, type PlacementMachineAccess, type PlacementOwnedPane, type PlacementPaneHost, type PlacementReconnectCheck, type PlacementSockets } from "./placement-host.ts";
+import { isRexLocalMachine, REX_BUNDLE_BIN, REX_EXIT_GONE, REX_EXIT_UNREACHABLE, resolveRexBinary, rexCommandEnv } from "./rex-machine.ts";
 
 const REX_CALL_TIMEOUT_MS = 15_000, REX_MAX_OUTPUT = 1024 * 1024, REX_CLOSE_POLLS = 20, REX_CLOSE_POLL_MS = 50;
+/** On a Rex SSH machine, placed tabs open in the one session with this label. */
+export const REX_SSH_SESSION_LABEL = "subagents";
 const sessionInspection = Compile(Type.Object({ session_id: Type.String() }));
+const sessionList = Compile(Type.Object({ sessions: Type.Array(Type.Object({ session_id: Type.String(), label: Type.Optional(Type.String()) })) }));
 const createdWindow = Compile(Type.Object({ window_id: Type.String(), block_ids: Type.Tuple([Type.String()]) }));
 const sessionWindows = Compile(Type.Object({ windows: Type.Array(Type.Object({ window_id: Type.String(), label: Type.Optional(Type.String()), layers: Type.Array(Type.Object({ blocks: Type.Array(Type.Object({ block_id: Type.String() })) })) })) }));
 const blockProcess = Compile(Type.Object({ foreground: Type.Object({ pid: Type.Integer() }) }));
@@ -19,17 +23,19 @@ const bridgeManifestPid = Compile(Type.Object({ pid: Type.Integer() }));
 
 /** Rex runtime directories go under /tmp: the bridge socket path inside a macOS TMPDIR exceeds the unix socket path limit. */
 function rexAccess(): PlacementMachineAccess { return localMachineAccess({ env: { ...rexCommandEnv(), TMPDIR: "/tmp" } }); }
+/** The same /tmp rule on the remote, whatever TMPDIR its SSH session has. */
+function rexSshAccess(machine: RexSshMachineReference, access: PlacementMachineAccess = sshMachineAccess(machine)): PlacementMachineAccess { return { ...access, shellCommand: (script, args) => remoteShellCommand(`TMPDIR=/tmp; export TMPDIR; ${script}`, args) }; }
 
 interface RexEndpoint { access: PlacementMachineAccess; bin: string; session: string; server?: string }
 export interface RexConnection extends RexEndpoint, PlacementSockets {}
 export interface RexPaneCandidate { present: boolean; foregroundPid?: number; bridgePid?: number }
 
-function asRexMachine(machine: PlacementMachineReference): RexMachineReference { if (machine.provider !== "rex") throw new Error("The Rex pane host only places runs on machine 'local'."); return machine; }
+function asRexMachine(machine: PlacementMachineReference): RexMachineReference { if (machine.provider !== "rex") throw new Error("The Rex pane host only places runs on Rex machines."); return machine; }
 
-/** Runs one rex command with --autostart=false and the recorded server; exit 4 always throws. */
-export async function runRex(endpoint: RexEndpoint, args: string[], what: string): Promise<PlacementCommandResult & { status: number }> {
+/** Runs one rex command on the pane machine with --autostart=false, the recorded server, and no inherited Rex selectors; exit 4 always throws. */
+export async function runRex(endpoint: Pick<RexEndpoint, "access" | "bin" | "server">, args: string[], what: string): Promise<PlacementCommandResult & { status: number }> {
 	const globals = endpoint.server ? ["--autostart=false", "-S", endpoint.server] : ["--autostart=false"];
-	const result = await endpoint.access.runAsync(endpoint.access.shellCommand('exec "$@"', [endpoint.bin, ...globals, ...args]), { timeout: REX_CALL_TIMEOUT_MS, maxBuffer: REX_MAX_OUTPUT });
+	const result = await endpoint.access.runAsync(endpoint.access.shellCommand('exec /usr/bin/env -u REX_SESSION -u REX_BLOCK -u REX_SERVER "$@"', [endpoint.bin, ...globals, ...args]), { timeout: REX_CALL_TIMEOUT_MS, maxBuffer: REX_MAX_OUTPUT });
 	if (result.error) throw new Error(`Rex ${what} failed: ${result.error.message}`, { cause: result.error });
 	if (result.status === REX_EXIT_UNREACHABLE) throw new Error(`The Rex server is unreachable (rex ${what} exited 4); the placed pane's state is unknown.`);
 	if (result.status === null) throw new Error(`Rex ${what} did not finish; the placed pane's state is unknown.`);
@@ -47,16 +53,78 @@ function parseRexJson<T extends TSchema>(text: string, validator: Validator<{}, 
 	return validator.Check(value) ? value : undefined;
 }
 
-/** The server must confirm the recorded session; a missing session fails closed. */
-export async function connectRex(machine: PlacementMachineReference, options: { bin?: string; access?: PlacementMachineAccess } = {}): Promise<RexConnection> {
-	const rex = asRexMachine(machine), access = options.access ?? rexAccess();
-	const endpoint: RexEndpoint = { access, bin: options.bin ?? resolveRexBinary(), session: rex.session };
-	if (rex.server) endpoint.server = rex.server;
-	const inspected = await runRex(endpoint, ["session", "inspect", rex.session, "--json"], "session inspect");
-	if (inspected.status === REX_EXIT_GONE) throw new Error(`Rex session ${rex.session} no longer exists on the Rex server.`);
+/** One remote lookup, matching resolveRexBinary: `$REX_BIN_DIR/rex`, then `rex` on PATH, then the Rex server bundle under the remote home. */
+async function resolveRemoteRexBinary(access: PlacementMachineAccess, machine: RexSshMachineReference): Promise<string> {
+	const script = `for c in "\${REX_BIN_DIR:+$REX_BIN_DIR/rex}" "$(command -v rex 2>/dev/null)" "$HOME/${REX_BUNDLE_BIN}"; do if [ -n "$c" ] && [ -f "$c" ] && [ -x "$c" ]; then printf '%s\\n' "$c"; exit 0; fi; done; exit 1`;
+	const found = await access.runAsync(access.shellCommand(script), { timeout: REX_CALL_TIMEOUT_MS, maxBuffer: 64 * 1024 });
+	if (found.error) throw new Error(`Could not look for the Rex CLI on ${machine.id}: ${found.error.message}`, { cause: found.error });
+	const bin = found.stdout.trim();
+	if (found.status !== 0 || !path.posix.isAbsolute(bin) || bin.includes("\n")) throw new Error(`The Rex CLI was not found on ${machine.id}. Install Rex there or put rex on its PATH.`);
+	return bin;
+}
+
+/** The pane's cwd as the remote Pi will report it: `~` expanded and symlinks resolved. Rex does not expand `~` itself. */
+async function resolveRemoteCwd(access: PlacementMachineAccess, machine: RexSshMachineReference): Promise<string> {
+	const script = `case "$1" in "~") d=$HOME;; "~/"*) d=$HOME/\${1#"~/"};; *) d=$1;; esac; cd -P -- "$d" 2>/dev/null && pwd -P`;
+	const resolved = await access.runAsync(access.shellCommand(script, [machine.cwd]), { timeout: REX_CALL_TIMEOUT_MS, maxBuffer: 64 * 1024 });
+	if (resolved.error) throw new Error(`Could not check ${machine.cwd} on ${machine.id}: ${resolved.error.message}`, { cause: resolved.error });
+	const cwd = resolved.stdout.trim();
+	if (resolved.status !== 0 || !path.posix.isAbsolute(cwd) || cwd.includes("\n")) throw new Error(`Nothing at ${machine.cwd} on ${machine.id}. Clone the repo there first; pi-subagents never clones, pulls, or checks out on a machine.`);
+	return cwd;
+}
+
+/** The remote Pi as a Rex tab's login environment finds it. */
+async function resolveRemotePi(access: PlacementMachineAccess, machine: RexSshMachineReference): Promise<string> {
+	const found = await access.runAsync(access.shellCommand(`exec "\${SHELL:-/bin/sh}" -lc 'command -v pi'`), { timeout: REX_CALL_TIMEOUT_MS, maxBuffer: 64 * 1024 });
+	if (found.error) throw new Error(`Could not look for Pi on ${machine.id}: ${found.error.message}`, { cause: found.error });
+	const pi = found.stdout.trim().split("\n").at(-1)?.trim() ?? "";
+	if (found.status !== 0 || !path.posix.isAbsolute(pi)) throw new Error(`Pi was not found on ${machine.id}: its login shell has no pi on PATH. Install Pi there.`);
+	return pi;
+}
+
+async function labeledSessions(endpoint: Pick<RexEndpoint, "access" | "bin">): Promise<string[]> {
+	const listed = await runRex(endpoint, ["ls", "--json"], "ls");
+	requireRexSuccess(listed, "ls");
+	const parsed = parseRexJson(listed.stdout, sessionList, "ls");
+	if (!parsed) throw new Error("Rex ls did not list the server's sessions.");
+	return parsed.sessions.filter((session) => session.label === REX_SSH_SESSION_LABEL).map((session) => session.session_id);
+}
+
+/**
+ * The session labeled `subagents` on the SSH machine, created when there is none. Rex allows duplicate labels, so two or
+ * more fail closed, also after creating one. Only launch calls this; reconnect and cleanup use the recorded session id.
+ */
+async function subagentsSession(endpoint: Pick<RexEndpoint, "access" | "bin">, machine: RexSshMachineReference): Promise<string> {
+	return withHerdrPaneAllocationLock(JSON.stringify(["rex-session", machine.target, REX_SSH_SESSION_LABEL]), async () => {
+		let sessions = await labeledSessions(endpoint);
+		if (sessions.length === 0) {
+			requireRexSuccess(await runRex(endpoint, ["new", REX_SSH_SESSION_LABEL, "--json"], "new"), "new");
+			sessions = await labeledSessions(endpoint);
+		}
+		const [session] = sessions;
+		if (sessions.length > 1) throw new Error(`Rex on ${machine.id} has ${sessions.length} sessions labeled ${REX_SSH_SESSION_LABEL}; close or rename the extras so placed runs have one session to open in.`);
+		if (!session) throw new Error(`Rex on ${machine.id} did not list the ${REX_SSH_SESSION_LABEL} session it just created.`);
+		return session;
+	});
+}
+
+/** The server must confirm the recorded session; a missing session fails closed. A Rex SSH machine's session is the one recorded at launch. */
+export async function connectRex(machine: PlacementMachineReference, options: { bin?: string; access?: PlacementMachineAccess; session?: string } = {}): Promise<RexConnection> {
+	const rex = asRexMachine(machine);
+	let endpoint: RexEndpoint;
+	if (isRexLocalMachine(rex)) {
+		endpoint = { access: options.access ?? rexAccess(), bin: options.bin ?? resolveRexBinary(), session: rex.session };
+		if (rex.server) endpoint.server = rex.server;
+	} else {
+		if (!options.session) throw new Error(`Rex machine '${rex.id}' has no recorded session; a placed run never picks one by label after launch.`);
+		const access = options.access ?? rexSshAccess(rex);
+		endpoint = { access, bin: options.bin ?? await resolveRemoteRexBinary(access, rex), session: options.session };
+	}
+	const inspected = await runRex(endpoint, ["session", "inspect", endpoint.session, "--json"], "session inspect");
+	if (inspected.status === REX_EXIT_GONE) throw new Error(`Rex session ${endpoint.session} no longer exists on the Rex server.`);
 	requireRexSuccess(inspected, "session inspect");
-	if (parseRexJson(inspected.stdout, sessionInspection, "session inspect")?.session_id !== rex.session) throw new Error("Rex session identity changed: the server reported a different session id.");
-	return { ...endpoint, ...access.openSockets() };
+	if (parseRexJson(inspected.stdout, sessionInspection, "session inspect")?.session_id !== endpoint.session) throw new Error("Rex session identity changed: the server reported a different session id.");
+	return { ...endpoint, ...endpoint.access.openSockets() };
 }
 
 async function inspectBlock(connection: RexConnection, blockId: string): Promise<"present" | "gone"> {
@@ -125,9 +193,10 @@ async function openRexWindow(connection: RexConnection, label: string, cwd: stri
 
 /**
  * Rex pane host: rex CLI calls on this machine, always with an explicit session. A local child opens as a background
- * window in the parent's session, started through the login shell's environment (as Rex starts any window) with the
- * bridge variables set by /usr/bin/env. There is no status subscription: the bridge socket is a direct local socket, so a
- * dead Pi closes it, and the reconnect that follows checks the block with `rex block call process` and fails closed.
+ * window in the parent's session; a Rex SSH child in the remote `subagents` session, with every rex call run over SSH.
+ * Pi starts through the login shell's environment (as Rex starts any window) with the bridge variables set by
+ * /usr/bin/env. There is no status subscription: a dead Pi closes the bridge socket (directly, or through the SSH
+ * forward), and the reconnect that follows checks the block with `rex block call process` and fails closed.
  */
 export const rexPaneHost = {
 	connect(machine) { return connectRex(machine); },
@@ -136,9 +205,13 @@ export const rexPaneHost = {
 		if (request.kind !== "pi") throw new Error("Rex supports native Pi children only for now.");
 		const environment = Object.entries(request.environment ?? {});
 		if (environment.some(([name]) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name))) throw new Error("Rex launch environment names must be shell variable names.");
-		const pi = getPiSpawnCommand(request.args);
-		if (!path.isAbsolute(pi.command)) throw new Error("Rex placement needs an absolute Pi executable; set PI_SUBAGENT_PI_BINARY to the Pi binary path.");
-		const window = await openRexWindow(connection, `subagent-${runId.slice(-8)}`, asRexMachine(machine).cwd, ["/usr/bin/env", ...environment.map(([name, value]) => `${name}=${value}`), pi.command, ...pi.args]);
+		const rex = asRexMachine(machine);
+		let pi: { command: string; args: string[] };
+		if (isRexLocalMachine(rex)) {
+			pi = getPiSpawnCommand(request.args);
+			if (!path.isAbsolute(pi.command)) throw new Error("Rex placement needs an absolute Pi executable; set PI_SUBAGENT_PI_BINARY to the Pi binary path.");
+		} else pi = { command: await resolveRemotePi(connection.access, rex), args: request.args };
+		const window = await openRexWindow(connection, `subagent-${runId.slice(-8)}`, rex.cwd, ["/usr/bin/env", ...environment.map(([name, value]) => `${name}=${value}`), pi.command, ...pi.args]);
 		const owned = { workspaceId: connection.session, tabId: window.window_id, paneId: window.block_ids[0] };
 		await onPane(owned);
 		return { owned, terminalId: owned.paneId };
@@ -176,13 +249,24 @@ function removeRexRuntimeDir(access: PlacementMachineAccess, runtimeDir: string)
 	try { removePlacedRuntimeDir(access, runtimeDir); } catch (error) { if (runtimeDirPresent(access, runtimeDir)) throw error; }
 }
 
-/** The placed-run owner bound to Rex and local access. */
+/** The placed-run owner bound to Rex and the pane machine's access. */
 export class RexPlacedRunOwner extends PlacedRunOwner<RexConnection, RexMachineReference> {
-	private constructor(machine: RexMachineReference, runId: string, runtimeDir: string, connection: RexConnection, access: PlacementMachineAccess) { super(machine, runId, runtimeDir, connection, rexPaneHost, access, () => removeRexRuntimeDir(access, runtimeDir)); }
-	static async create(machine: RexMachineReference, runId: string): Promise<RexPlacedRunOwner> {
+	private constructor(machine: RexMachineReference, runId: string, runtimeDir: string, connection: RexConnection, access: PlacementMachineAccess, host: PlacementPaneHost<RexConnection, RexPaneCandidate>) { super(machine, runId, runtimeDir, connection, host, access, () => removeRexRuntimeDir(access, runtimeDir)); }
+	/** A Rex SSH owner's machine carries the resolved remote cwd, and its host reconnects only to the session recorded here. */
+	static async create(machine: RexMachineReference, runId: string, options: { sshAccess?: PlacementMachineAccess } = {}): Promise<RexPlacedRunOwner> {
 		// A short hash names the directory, so /tmp/pi-subagents-herdr-<hash>-XXXXXXXX/bridge.sock (57 bytes) fits the 103-byte macOS socket path limit for any run id.
-		const access = rexAccess(), runtimeDir = await createPlacedRuntimeDir(access, createHash("sha256").update(runId).digest("hex").slice(0, 12));
-		try { return new RexPlacedRunOwner(machine, runId, runtimeDir, await connectRex(machine, { access }), access); }
+		const hash = createHash("sha256").update(runId).digest("hex").slice(0, 12);
+		if (isRexLocalMachine(machine)) {
+			const access = rexAccess(), runtimeDir = await createPlacedRuntimeDir(access, hash);
+			try { return new RexPlacedRunOwner(machine, runId, runtimeDir, await connectRex(machine, { access }), access, rexPaneHost); }
+			catch (error) { try { removeRexRuntimeDir(access, runtimeDir); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Rex owner creation failed and runtime cleanup also failed.", { cause: error }); } throw error; }
+		}
+		const access = rexSshAccess(machine, options.sshAccess), bin = await resolveRemoteRexBinary(access, machine);
+		const placed: RexSshMachineReference = { ...machine, cwd: await resolveRemoteCwd(access, machine) };
+		const session = await subagentsSession({ access, bin }, placed);
+		const host = { ...rexPaneHost, connect: (target: PlacementMachineReference) => connectRex(target, { access, bin, session }) } satisfies PlacementPaneHost<RexConnection, RexPaneCandidate>;
+		const runtimeDir = await createPlacedRuntimeDir(access, hash);
+		try { return new RexPlacedRunOwner(placed, runId, runtimeDir, await host.connect(placed), access, host); }
 		catch (error) { try { removeRexRuntimeDir(access, runtimeDir); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Rex owner creation failed and runtime cleanup also failed.", { cause: error }); } throw error; }
 	}
 }

@@ -12,6 +12,7 @@ import { encodeHerdrPiFrame, HERDR_PI_MODE_ENV, HERDR_PI_PROTOCOL, HERDR_PI_RUN_
 import { discoverPlacedBridgeManifest, type PlacedBridgeManifest, type PlacedRunOwner } from "./placed-run-owner.ts";
 import type { PlacementBridgeIdentity, PlacementPaneHost, PlacementReconnectCheck, PlacementRunState, PlacementSockets } from "./placement-host.ts";
 import { RexPlacedRunOwner } from "./rex-pane-host.ts";
+import { isRexLocalMachine } from "./rex-machine.ts";
 
 export interface HerdrRunIdentity { runId: string; machineId: string; target: string; session: string | null; workspaceId: string; tabId: string; paneId: string; terminalId: string; agentName: string; nativeSessionId: string; cwd: string; runtimeDir: string }
 export interface HerdrRunSnapshot { connection: "connected" | "unknown" | "closed"; state: PlacementRunState; identity?: HerdrRunIdentity; revision: number }
@@ -135,11 +136,11 @@ export async function createHerdrPiSession(launch: ChildSessionLaunch): Promise<
 	return startPlacedPiSession(launch, await HerdrPlacedRunOwner.create(launch.machine, runId), policy, launch.machine.target);
 }
 
-/** `machine: "local"`: the same bridge session, with the Rex pane host and local machine access. */
+/** A Rex machine: the same bridge session, with the Rex pane host and local (`machine: "local"`) or SSH machine access. */
 export async function createRexPiSession(launch: ChildSessionLaunch): Promise<ChildSession> {
-	if (launch.machine?.provider !== "rex") throw new Error("Rex pane-native Pi launch requires machine 'local'.");
+	if (launch.machine?.provider !== "rex") throw new Error("Rex pane-native Pi launch requires a Rex machine.");
 	const policy = serializeHerdrPiLaunch(launch); const runId = safeRunId(launch.runtime.runId);
-	return startPlacedPiSession(launch, await RexPlacedRunOwner.create(launch.machine, runId), policy, launch.machine.id);
+	return startPlacedPiSession(launch, await RexPlacedRunOwner.create(launch.machine, runId), policy, isRexLocalMachine(launch.machine) ? launch.machine.id : launch.machine.target);
 }
 
 async function startPlacedPiSession<C extends PlacementSockets>(launch: ChildSessionLaunch, owner: PlacedRunOwner<C>, policy: ReturnType<typeof serializeHerdrPiLaunch>, target: string): Promise<ChildSession> {
