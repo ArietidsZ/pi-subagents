@@ -4381,7 +4381,6 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		: undefined;
 	try {
 		const childSessionFile = sessionFileForTask(params.agent!, 0, modelOverride, modelOverrideFromParent, modelOrigin);
-		const launchThinking = resolveEffectiveThinking(modelOverride, thinkingOverrideForTask());
 		rememberRunningForegroundRun({
 			modelResponseAliases, runId, mode: "single", cwd: singleCwd, sessionId: data.parentSessionId, params, effectiveOutput, effectiveOutputMode, extensionBindings: params.extensionBindings, requiredExtensions,
 			child: omitUndefinedProperties({
@@ -4389,7 +4388,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				context: shouldForkAgent(contextPolicy, params.agent!) ? "fork" as const : "fresh" as const,
 				sessionFile: childSessionFile,
 				model: modelOverride,
-				thinking: launchThinking,
+				thinking: resolveEffectiveThinking(modelOverride, thinkingOverrideForTask()),
 				capabilityCeiling: data.capabilityCeiling,
 			}),
 			parentWorkflowRunId: params.workflowParentRunId ?? foregroundControl?.parentWorkflowRunId,
@@ -4546,7 +4545,6 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				? { suffix: pendingHandoff ? formatParallelHandoffReference(pendingHandoff) : "", reference: pendingHandoff }
 				: await finalizeSingleWorktreeHandoff({ worktreeSetup, artifactsDir, runId, cwd: sourceCwd, agent: params.agent!, result: r, workflowKey: params.workflowKey, lane });
 		} catch (error) {
-			// The final save below will not run, so the launch-time record must not outlive this run.
 			discardRunningRecord();
 			throw error;
 		}

@@ -20,8 +20,7 @@ function runnerExitedWithoutResult(asyncDir: string, runId: string, resultPath: 
 	const status = readStatus(asyncDir);
 	if (!status || (status.state !== "running" && status.state !== "queued") || typeof status.pid !== "number") return false;
 	// A pid from another namespace never reads as dead here, so the runner is not presumed gone.
-	const liveness = checkRecordedPidLiveness({ pid: status.pid, pidNamespaceScope: status.pidNamespaceScope, bootId: status.bootId }, { observedScope: currentPidNamespaceScope(), observedBootId: currentBootId() });
-	if (liveness !== "dead") return false;
+	if (checkRecordedPidLiveness({ pid: status.pid, pidNamespaceScope: status.pidNamespaceScope, bootId: status.bootId }, { observedScope: currentPidNamespaceScope(), observedBootId: currentBootId() }) !== "dead") return false;
 	return !fs.existsSync(resultPath) && !(status.sessionId && resultPayloadPathForSessionRun(asyncDir, status.sessionId, runId));
 }
 

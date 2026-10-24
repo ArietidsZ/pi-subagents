@@ -6,7 +6,7 @@ import { writePrivateAtomicJson } from "../../shared/atomic-json.ts";
 import { utf8Tail } from "../../shared/utf8.ts";
 import { validateAcceptanceInput } from "../shared/acceptance.ts";
 import { validateModelResponseAliases } from "../../shared/model-response-aliases.ts";
-import { checkRecordedPidLiveness, type PidLiveness, type RecordedPid } from "../background/stale-run-reconciler.ts";
+import { checkRecordedPidLiveness } from "../background/stale-run-reconciler.ts";
 import { currentPidNamespaceScope } from "../background/pid-namespace.ts";
 import { currentBootId } from "../background/boot-id.ts";
 
@@ -179,7 +179,7 @@ export function persistForegroundRunHistory(state: SubagentState, options: { res
  */
 export function persistRunningForegroundRun(run: ForegroundResumeRun, options: { resultsDir?: string; limit?: number } = {}): void {
 	const compact = compactRun(run);
-	if (!compact || !hasRunningChild(compact)) return;
+	if (!compact) return;
 	const resultsDir = options.resultsDir ?? DIRS.results;
 	const merged = new Map(readIndex(resultsDir).runs.map((existing) => [existing.runId, existing]));
 	merged.set(compact.runId, compact);
@@ -195,14 +195,11 @@ export function discardRunningForegroundRun(runId: string, options: { resultsDir
 	writePrivateAtomicJson(historyPath(resultsDir), { version: HISTORY_VERSION, runs });
 }
 
-function currentOwnerLiveness(owner: RecordedPid): PidLiveness {
-	return checkRecordedPidLiveness(owner, { observedScope: currentPidNamespaceScope(), observedBootId: currentBootId() });
-}
-
 /** A run whose owning Pi process is gone loads as stopped and resumable; one whose owner may be alive is not loaded. */
-function restoreInterruptedRun(run: ForegroundResumeRun, liveness: (owner: RecordedPid) => PidLiveness): ForegroundResumeRun | undefined {
-	if (!isOwnerPid(run.ownerPid) || liveness({ pid: run.ownerPid, pidNamespaceScope: run.ownerPidNamespaceScope, bootId: run.ownerBootId }) !== "dead") return undefined;
-	const { ownerPid: _ownerPid, ownerPidNamespaceScope: _ownerPidNamespaceScope, ownerBootId: _ownerBootId, ...rest } = run;
+function restoreInterruptedRun(run: ForegroundResumeRun): ForegroundResumeRun | undefined {
+	// readIndex admits a running child only with a valid ownerPid.
+	const { ownerPid, ownerPidNamespaceScope, ownerBootId, ...rest } = run;
+	if (checkRecordedPidLiveness({ pid: ownerPid!, pidNamespaceScope: ownerPidNamespaceScope, bootId: ownerBootId }, { observedScope: currentPidNamespaceScope(), observedBootId: currentBootId() }) !== "dead") return undefined;
 	return {
 		...rest,
 		children: run.children.map((child) => {
@@ -227,7 +224,7 @@ export function foregroundChildStateLabel(run: Pick<ForegroundResumeRun, "runId"
 	return child.sessionFile ? `interrupted when Pi exited · resume ${run.runId}` : "interrupted when Pi exited";
 }
 
-export function restoreForegroundRunHistory(state: SubagentState, options: { resultsDir?: string; sessionId?: string | null; limit?: number; ownerLiveness?: (owner: RecordedPid) => PidLiveness } = {}): number {
+export function restoreForegroundRunHistory(state: SubagentState, options: { resultsDir?: string; sessionId?: string | null; limit?: number } = {}): number {
 	const sessionId = options.sessionId ?? state.currentSessionId;
 	if (!sessionId) return 0;
 	const index = readIndex(options.resultsDir ?? DIRS.results);
@@ -236,7 +233,7 @@ export function restoreForegroundRunHistory(state: SubagentState, options: { res
 	let restored = 0;
 	for (const run of runs) {
 		if (state.foregroundRuns.has(run.runId)) continue;
-		const loaded = hasRunningChild(run) ? restoreInterruptedRun(run, options.ownerLiveness ?? currentOwnerLiveness) : run;
+		const loaded = hasRunningChild(run) ? restoreInterruptedRun(run) : run;
 		if (!loaded) continue;
 		state.foregroundRuns.set(run.runId, loaded);
 		restored += 1;

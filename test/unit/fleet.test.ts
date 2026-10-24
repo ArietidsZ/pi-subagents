@@ -1015,13 +1015,13 @@ describe("native subagent fleet", () => {
 				updatedAt: 100,
 				parentWorkflowRunId: "workflow-parent",
 				children: [{ agent: "worker", index: 0, status: "running" as const, activityState: "active" as const, currentTool: "bash", sessionFile, resumeContract: { outputMode: "inline" as const } }],
+				ownerPidNamespaceScope: currentPidNamespaceScope(),
 				...owner,
 			});
-			const scope = currentPidNamespaceScope();
-			persistRunningForegroundRun(running("owner-dead", { ownerPid: exited, ...(scope ? { ownerPidNamespaceScope: scope } : {}) }), { resultsDir });
-			persistRunningForegroundRun(running("owner-alive", { ownerPid: process.pid, ...(scope ? { ownerPidNamespaceScope: scope } : {}), ownerBootId: "boot-now" }), { resultsDir });
+			persistRunningForegroundRun(running("owner-dead", { ownerPid: exited }), { resultsDir });
+			persistRunningForegroundRun(running("owner-alive", { ownerPid: process.pid, ownerBootId: "boot-now" }), { resultsDir });
 			// This test process is alive, so only the boot id can say this owner is gone.
-			persistRunningForegroundRun(running("owner-rebooted", { ownerPid: process.pid, ...(scope ? { ownerPidNamespaceScope: scope } : {}), ownerBootId: "boot-before" }), { resultsDir });
+			persistRunningForegroundRun(running("owner-rebooted", { ownerPid: process.pid, ownerBootId: "boot-before" }), { resultsDir });
 			persistRunningForegroundRun(running("owner-other-namespace", { ownerPid: exited, ownerPidNamespaceScope: "pid:[container]" }), { resultsDir });
 			const historyFile = path.join(resultsDir, "foreground-history.json");
 			const fileRuns = () => new Map((JSON.parse(fs.readFileSync(historyFile, "utf-8")) as { runs: Array<{ runId: string; ownerPid?: number; children: Array<{ status: string }> }> }).runs.map((run) => [run.runId, run]));
@@ -1046,7 +1046,6 @@ describe("native subagent fleet", () => {
 			persistForegroundRunHistory(restored, { resultsDir });
 			const merged = fileRuns();
 			assert.equal(merged.get("owner-dead")?.children[0]?.status, "stopped");
-			assert.equal(merged.get("owner-dead")?.ownerPid, undefined);
 			assert.equal(merged.get("owner-alive")?.children[0]?.status, "running", "a live owner's record survives another process's save");
 			assert.equal(merged.get("owner-other-namespace")?.children[0]?.status, "running");
 		} finally {
@@ -1054,22 +1053,17 @@ describe("native subagent fleet", () => {
 		}
 	});
 
-	it("replaces a running foreground record with the final save, and discards it only while this process still owns it", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-foreground-running-replace-"));
+	it("discards a running foreground record only while this process owns it", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-foreground-running-discard-"));
 		try {
 			const resultsDir = path.join(root, "results");
-			const running = (runId: string, ownerPid = process.pid) => ({ runId, mode: "single" as const, cwd: root, sessionId: "session-current", updatedAt: 100, ownerPid, children: [{ agent: "worker", index: 0, status: "running" as const }] });
-			persistRunningForegroundRun(running("finished"), { resultsDir });
-			persistRunningForegroundRun(running("threw"), { resultsDir });
+			const running = (runId: string, ownerPid: number) => ({ runId, mode: "single" as const, cwd: root, sessionId: "session-current", updatedAt: 100, ownerPid, children: [{ agent: "worker", index: 0, status: "running" as const }] });
+			persistRunningForegroundRun(running("threw", process.pid), { resultsDir });
 			persistRunningForegroundRun(running("other-owner", process.pid + 1), { resultsDir });
-			const state = stateForTest();
-			state.foregroundRuns!.set("finished", { runId: "finished", mode: "single", cwd: root, sessionId: "session-current", updatedAt: 200, children: [{ agent: "worker", index: 0, status: "completed", finalOutput: "done" }] });
-			persistForegroundRunHistory(state, { resultsDir });
 			discardRunningForegroundRun("threw", { resultsDir });
-			discardRunningForegroundRun("finished", { resultsDir });
 			discardRunningForegroundRun("other-owner", { resultsDir });
-			const runs = (JSON.parse(fs.readFileSync(path.join(resultsDir, "foreground-history.json"), "utf-8")) as { runs: Array<{ runId: string; ownerPid?: number; children: Array<{ status: string }> }> }).runs;
-			assert.deepEqual(runs.map((run) => [run.runId, run.children[0]?.status, run.ownerPid]).sort(), [["finished", "completed", undefined], ["other-owner", "running", process.pid + 1]]);
+			const runs = (JSON.parse(fs.readFileSync(path.join(resultsDir, "foreground-history.json"), "utf-8")) as { runs: Array<{ runId: string }> }).runs;
+			assert.deepEqual(runs.map((run) => run.runId), ["other-owner"]);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

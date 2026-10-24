@@ -2042,11 +2042,6 @@ Answer only from the supplied synthetic text.
 			return { start, launch, waitFor, settled, stopWhenStage2Starts, stopAction };
 		};
 		const resultFileText = (runId: string) => fs.readFileSync(path.join(DIRS.results, `${runId}.json`), "utf-8");
-		const exitedPid = () => {
-			const exited = spawnSync(process.execPath, ["-e", ""]);
-			assert.ok(exited.pid);
-			return exited.pid;
-		};
 		// What a killed Pi leaves behind for a live run: status still `running` under a pid that is gone,
 		// the child journal as written so far, and the active-run marker. The copy belongs to `sessionId`.
 		const crashedCopy = (sourceRunId: string, sessionId: string) => {
@@ -2054,50 +2049,21 @@ Answer only from the supplied synthetic text.
 			const asyncDir = path.join(DIRS.async, runId);
 			const { toolCallId: _toolCallId, ...status } = readStatusFile(sourceRunId);
 			assert.equal(status.state, "running");
+			const exitedPid = spawnSync(process.execPath, ["-e", ""]).pid;
+			assert.ok(exitedPid);
 			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ ...status, runId, sessionId, pid: exitedPid() }));
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ ...status, runId, sessionId, pid: exitedPid }));
 			fs.copyFileSync(path.join(DIRS.async, sourceRunId, "workflow-children.jsonl"), path.join(asyncDir, "workflow-children.jsonl"));
 			updateActiveRunIndex(asyncDir, "running");
 			return runId;
 		};
 		// Session start for the reopened session reconciles its active runs (restoreActiveJobs → listAsyncRuns).
 		const reopenSession = (sessionId: string) => listAsyncRuns(DIRS.async, { states: ["queued", "running"], sessionId, resultsDir: DIRS.results });
-		const twoStageScript = (nonce: string) => `const first = await runs.run("stage1", { agent: "echo", task: "Stage one ${nonce}" }); const second = await runs.run("stage2", { agent: "echo", task: "Stage two ${nonce}" }); return { first: first.output, second: second.output, reused: first.reused === true };`;
 		const stage2Started = (status: AsyncStatus) => status.workflow?.trace.some((entry) => entry.key === "stage2" && entry.state === "started") ?? false;
 
-		it("reuses the finished stage of a workflow whose Pi process exited once its session reopens", { timeout: 90_000, skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
-			const nonce = `owner-exited-${Date.now()}`;
-			const script = twoStageScript(nonce);
-			const args = { nonce };
-			const sessionId = `session-crashed-${nonce}`;
-			const { launch, waitFor, settled, stopWhenStage2Starts } = setup();
-			mockPi.onCall({ matchArgIncludes: `Stage one ${nonce}`, output: "stage one done" });
-			mockPi.onCall({ matchArgIncludes: `Stage two ${nonce}`, hangUntilAbort: true });
-			const donorId = await launch({ workflowScript: script, args }, `session-donor-${nonce}`);
-			await waitFor(donorId, stage2Started);
-			const crashedId = crashedCopy(donorId, sessionId);
-			await stopWhenStage2Starts(donorId, new Error("Stopped by user."));
-			const callsAfterCrash = mockPi.callCount();
-
-			reopenSession(sessionId);
-			const repaired = readStatusFile(crashedId);
-			assert.equal(repaired.state, "failed");
-			assert.equal(repaired.workflow?.stopCause, "owner-exited");
-			const summary = (JSON.parse(resultFileText(crashedId)) as { summary?: string }).summary ?? "";
-			assert.match(summary, new RegExp(`^The Pi process \\(PID \\d+\\) that ran workflow ${crashedId} exited before the workflow finished\\.`));
-			assert.ok(summary.endsWith(`from another session, add options: { reuseFrom: "${crashedId}" }.`), summary);
-
-			mockPi.onCall({ matchArgIncludes: `Stage two ${nonce}`, output: "stage two done" });
-			const relaunched = await settled(await launch({ workflowScript: script, args }, sessionId));
-			assert.equal(relaunched.state, "complete", relaunched.error);
-			assert.equal(relaunched.workflow?.reusedFrom, crashedId);
-			assert.deepEqual(relaunched.workflow?.value, { first: "stage one done", second: "stage two done", reused: true });
-			assert.equal(mockPi.callCount(), callsAfterCrash + 1, "only the unfinished stage2 launches");
-		});
-
-		it("still reuses the first run's finished stage after two crashes in a row", { timeout: 90_000, skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		it("reuses a crashed workflow's finished stage through reuseFrom and after its session reopens, across two crashes", { timeout: 90_000, skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 			const nonce = `owner-exited-twice-${Date.now()}`;
-			const script = twoStageScript(nonce);
+			const script = `const first = await runs.run("stage1", { agent: "echo", task: "Stage one ${nonce}" }); const second = await runs.run("stage2", { agent: "echo", task: "Stage two ${nonce}" }); return { first: first.output, second: second.output, reused: first.reused === true };`;
 			const args = { nonce };
 			const donorSession = `session-donor-${nonce}`;
 			const secondCrashSession = `session-second-crash-${nonce}`;

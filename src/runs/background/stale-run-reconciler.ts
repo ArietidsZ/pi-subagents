@@ -266,7 +266,7 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 	const runId = status.runId || path.basename(asyncDir);
 	const pid = typeof status.pid === "number" ? status.pid : "unknown";
 	// A dead workflow host is the Pi process itself; its journal keeps the finished children for a relaunch.
-	const workflowOwnerExited = ownerExited && status.mode === "workflow" && status.workflow !== undefined;
+	const exitedWorkflow = ownerExited && status.mode === "workflow" ? status.workflow : undefined;
 	const terminal = readProcessTerminal(asyncDir, { runId }) ?? status.processTerminal;
 	const runnerExit = terminal?.state === "observed" || terminal?.state === "unknown"
 		? terminal.instances?.find((instance) => instance.kind === "runner" && instance.processInstanceId === terminal.runnerProcessInstanceId)
@@ -274,7 +274,7 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 	const exitText = runnerExit?.kind === "runner"
 		? `exited with code ${runnerExit.exitCode ?? "none"}${runnerExit.signal ? ` (signal ${runnerExit.signal})` : ""}`
 		: "exited or disappeared";
-	const baseMessage = reason ?? (workflowOwnerExited
+	const baseMessage = reason ?? (exitedWorkflow
 		? `The Pi process (PID ${pid}) that ran workflow ${runId} exited before the workflow finished. Marked run failed by stale-run reconciliation. ${workflowRelaunchReuseHint(runId)}`
 		: `Async runner process ${pid} ${exitText} before writing a result. Marked run failed by stale-run reconciliation.`);
 	const diagnostics = readRunnerStartupDiagnostics(asyncDir);
@@ -311,7 +311,7 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 		lastUpdate: now,
 		endedAt: now,
 		steps: repairedSteps,
-		...(workflowOwnerExited && status.workflow ? { workflow: { ...status.workflow, stopCause: WORKFLOW_STOP_CAUSE_OWNER_EXITED } } : {}),
+		...(exitedWorkflow ? { workflow: { ...exitedWorkflow, stopCause: WORKFLOW_STOP_CAUSE_OWNER_EXITED } } : {}),
 	};
 	const resultAgent = repairedSteps[status.currentStep ?? 0]?.agent ?? repairedSteps[0]?.agent ?? "subagent";
 	return {

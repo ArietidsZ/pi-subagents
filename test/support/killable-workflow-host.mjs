@@ -29,6 +29,6 @@ const executor = createSubagentExecutor({
 const ctx = makeMinimalCtx(cwd);
 ctx.sessionManager.getSessionId = () => sessionId;
 const launched = await executor.execute("killable-workflow", JSON.parse(paramsJson), new AbortController().signal, undefined, ctx);
-fs.writeFileSync(output, JSON.stringify({ pid: process.pid, isError: launched.isError === true, text: launched.content[0]?.text, runId: launched.details?.asyncId }));
+fs.writeFileSync(output, JSON.stringify({ isError: launched.isError === true, text: launched.content[0]?.text, runId: launched.details?.asyncId }));
 // Stay alive as the workflow's owner until the test kills this process.
 setInterval(() => {}, 60_000);

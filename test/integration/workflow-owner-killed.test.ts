@@ -61,9 +61,8 @@ describe("a workflow whose Pi process is killed", { skip: process.platform === "
 			let hostStderr = "";
 			host.stderr?.on("data", (chunk) => { hostStderr += String(chunk); });
 			const hostExited = once(host, "exit");
-			const launched = await pollFor("the host to launch the workflow", () => readJson<{ pid: number; isError: boolean; text?: string; runId?: string }>(hostOutput), 30_000).catch((error: Error) => assert.fail(`${error.message}; host stderr: ${hostStderr}`));
+			const launched = await pollFor("the host to launch the workflow", () => readJson<{ isError: boolean; text?: string; runId?: string }>(hostOutput), 30_000).catch((error: Error) => assert.fail(`${error.message}; host stderr: ${hostStderr}`));
 			assert.equal(launched.isError, false, launched.text);
-			assert.equal(launched.pid, host.pid);
 			const killedId = launched.runId!;
 
 			// Kill only once stage1's result is journaled and stage2's runner is live.

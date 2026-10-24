@@ -30,12 +30,7 @@ export function currentBootId(): string | undefined {
 	const runtime = globalThis as BootIdGlobal;
 	const cached = runtime[BOOT_ID_KEY];
 	if (cached) return cached.value;
-	let value: string | undefined;
-	try {
-		value = reader();
-	} catch {
-		value = undefined;
-	}
+	const value = reader();
 	runtime[BOOT_ID_KEY] = { value };
 	return value;
 }

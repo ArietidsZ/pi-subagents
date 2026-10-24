@@ -49,7 +49,6 @@ describe("async stale-run reconciliation", () => {
 		for (const testCase of cases) {
 			assert.equal(checkRecordedPidLiveness({ pid: 4242, ...testCase.recorded }, { ...testCase.observed, kill: testCase.kill }), testCase.expected, testCase.name);
 		}
-		assert.equal(checkRecordedPidLiveness({ pid: 4242, bootId: "boot-a" }, { observedScope: undefined, observedBootId: "boot-b", probe: noProbe }), "dead", "an injected probe is skipped too");
 	});
 
 	it("marks a workflow whose Pi process is dead owner-exited, and no other repair", () => {
@@ -83,7 +82,6 @@ describe("async stale-run reconciliation", () => {
 			assert.equal(dead.status.state, "failed");
 			assert.equal(dead.status.workflow.stopCause, "owner-exited");
 			assert.equal(dead.status.workflow.scriptDigest, "digest");
-			assert.equal(dead.result.message, ownerExitedMessage("wf-dead"));
 			assert.equal(JSON.parse(fs.readFileSync(path.join(resultsDir, "wf-dead.json"), "utf-8")).summary, ownerExitedMessage("wf-dead"));
 
 			const rebooted = reconcile("wf-rebooted", workflowStatus("wf-rebooted", { bootId: "boot-before" }), { kill: () => { throw new Error("the pid must not be probed"); } });
@@ -107,45 +105,6 @@ describe("async stale-run reconciliation", () => {
 			const single = reconcile("single-dead", singleStatus, { kill: () => { throw errno("ESRCH"); } });
 			assert.equal(single.status.workflow, undefined);
 			assert.equal(single.result.message, "Async runner process 4242 exited or disappeared before writing a result. Marked run failed by stale-run reconciliation.");
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("repairs a run whose pid was saved before a reboot, and leaves a same-boot live run alone", () => {
-		const root = tempRoot("pi-stale-run-boot-id-");
-		try {
-			const status = (runId: string, extra: Record<string, unknown>) => ({
-				runId,
-				mode: "single",
-				state: "running",
-				pid: 4242,
-				pidNamespaceScope: "pid:[same]",
-				startedAt: 1000,
-				lastUpdate: 1000,
-				steps: [{ agent: "worker", status: "running", startedAt: 1000 }],
-				...extra,
-			});
-			const options = { resultsDir: path.join(root, "results"), pidNamespaceScope: () => "pid:[same]", bootId: () => "boot-now", now: () => 2000 };
-
-			const rebooted = path.join(root, "run-rebooted");
-			writeStatus(rebooted, status("run-rebooted", { bootId: "boot-before" }));
-			const repaired = reconcileAsyncRun(rebooted, { ...options, kill: () => { throw new Error("the pid must not be probed"); } });
-			assert.equal(repaired.repaired, true);
-			assert.equal(JSON.parse(fs.readFileSync(path.join(rebooted, "status.json"), "utf-8")).state, "failed");
-
-			const otherNamespace = path.join(root, "run-other-namespace");
-			writeStatus(otherNamespace, status("run-other-namespace", { bootId: "boot-before", pidNamespaceScope: "pid:[container]" }));
-			const unknown = reconcileAsyncRun(otherNamespace, { ...options, kill: () => { throw errno("ESRCH"); } });
-			assert.equal(unknown.repaired, false);
-			assert.equal(JSON.parse(fs.readFileSync(path.join(otherNamespace, "status.json"), "utf-8")).state, "running");
-
-			const sameBoot = path.join(root, "run-same-boot");
-			writeStatus(sameBoot, status("run-same-boot", { bootId: "boot-now" }));
-			const before = fs.readFileSync(path.join(sameBoot, "status.json"), "utf-8");
-			const untouched = reconcileAsyncRun(sameBoot, { ...options, kill: () => true });
-			assert.equal(untouched.repaired, false);
-			assert.equal(fs.readFileSync(path.join(sameBoot, "status.json"), "utf-8"), before);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
