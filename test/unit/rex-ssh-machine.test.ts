@@ -58,7 +58,7 @@ describe("Rex SSH machine resolution", () => {
 		assert.throws(() => resolveMachinePlacement({ machine: "workmac", cwd: project, herdrBin: noHerdr }), /invalid 'machines\.workmac\.rex'/u);
 	});
 
-	it("rejects non-Pi runners on a Rex SSH name before launch, where Herdr would accept them", () => {
+	it("rejects non-Pi runners on a Rex SSH name before launch, where Herdr would accept them", { skip: process.platform === "win32" ? "machine placement is rejected outright on Windows" : false }, () => {
 		const claude = { machine: "workmac", agentName: "claude", runnerType: "external-cli", adapter: "claude-code" };
 		assert.equal(formatHerdrMachineRunnerUnsupported(claude), undefined);
 		writeJson(userSettings, { subagents: { machines: { workmac: { rex: { ssh: "100.82.67.118" } } } } });
