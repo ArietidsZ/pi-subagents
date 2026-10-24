@@ -24,6 +24,32 @@ function isTerminalState(state: AsyncStatus["state"]): boolean {
 	return state === "complete" || state === "failed" || state === "partial" || state === "paused" || state === "stopped" || state === "rejected";
 }
 
+function isCorruptStatusError(error: unknown, statusPath: string): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return message.startsWith(`Failed to parse async status file '${statusPath}'`)
+		|| message.startsWith(`Failed to validate async status file '${statusPath}'`)
+		|| message.startsWith(`Invalid async status '${statusPath}'`);
+}
+
+// A corrupt indexed status is retried on every read. Emit a warning only when
+// its observed file identity or parse outcome changes, like active-run diagnostics.
+const reportedCorruptTerminalStatus = new Map<string, string>();
+
+function warnCorruptTerminalStatus(runId: string, marker: string, statusPath: string, error: unknown): void {
+	let fileSignature = "unavailable";
+	try {
+		const stat = fs.statSync(statusPath);
+		fileSignature = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino}`;
+	} catch (statError) {
+		if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError;
+	}
+	const message = error instanceof Error ? error.message : String(error);
+	const signature = `${fileSignature}\n${message}`;
+	if (reportedCorruptTerminalStatus.get(marker) === signature) return;
+	reportedCorruptTerminalStatus.set(marker, signature);
+	console.error(`[pi-subagents] Skipping indexed terminal run '${runId}' with corrupt status at '${statusPath}': ${message}.`);
+}
+
 function indexRoot(asyncDirRoot: string): string {
 	return path.join(asyncDirRoot, TERMINAL_RUN_INDEX_DIR);
 }
@@ -169,7 +195,15 @@ export function readRecentTerminalRunIndex(asyncDirRoot: string, options: { sess
 			continue;
 		}
 		const asyncDir = path.join(asyncDirRoot, entry.runId);
-		const status = readStatus(asyncDir);
+		const statusPath = path.join(asyncDir, "status.json");
+		let status: AsyncStatus | null;
+		try {
+			status = readStatus(asyncDir);
+		} catch (error) {
+			if (!isCorruptStatusError(error, statusPath)) throw error;
+			warnCorruptTerminalStatus(entry.runId, marker, statusPath, error);
+			continue;
+		}
 		if (!status || !isTerminalState(status.state) || status.sessionId !== entry.sessionId || (status.runId && status.runId !== entry.runId)) {
 			removeInvalidMarker(marker);
 			continue;
