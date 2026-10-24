@@ -51,6 +51,8 @@ import {
 import { CHAIN_RUNS_DIR, DIRS, INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, SUBAGENT_CONTROL_EVENT, TEMP_ARTIFACTS_DIR, type AsyncStatus, type ChildWatchdogProgress, type ControlEvent, type SubagentState } from "../../src/shared/types.ts";
 import { ACTIVE_RUN_INDEX_DIR } from "../../src/runs/background/active-run-index.ts";
 import { encodeIndexSegment } from "../../src/runs/background/index-segment.ts";
+import { currentBootId } from "../../src/runs/background/boot-id.ts";
+import { currentPidNamespaceScope } from "../../src/runs/background/pid-namespace.ts";
 import { waitForSubagents } from "../../src/runs/background/subagent-wait.ts";
 import { listAsyncRuns } from "../../src/runs/background/async-status.ts";
 import { formatControlNoticeMessage } from "../../src/runs/shared/subagent-control.ts";
@@ -950,6 +952,81 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 			}
 		});
 	}
+
+	it("saves a foreground single run as running while it runs, and its final result replaces the record", { timeout: 60_000, skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const nonce = `foreground-running-${Date.now()}`;
+		const release = path.join(tempDir, `${nonce}.release`);
+		mockPi.onCall({ matchArgIncludes: `Single ${nonce}`, waitForPath: release, output: "single done" });
+		mockPi.onCall({ matchArgIncludes: `Workflow child ${nonce}`, waitForPath: release, output: "child done" });
+		type HistoryRun = { runId: string; updatedAt: number; ownerPid?: number; ownerPidNamespaceScope?: string; ownerBootId?: string; parentWorkflowRunId?: string; children: Array<{ status: string; sessionFile?: string }> };
+		const historyRuns = (): HistoryRun[] => {
+			try {
+				return (JSON.parse(fs.readFileSync(path.join(DIRS.results, "foreground-history.json"), "utf-8")) as { runs: HistoryRun[] }).runs;
+			} catch {
+				return [];
+			}
+		};
+		const waitForRecord = async (label: string, predicate: (run: HistoryRun) => boolean): Promise<HistoryRun> => {
+			for (const deadline = Date.now() + 15_000; Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 20))) {
+				const run = historyRuns().find(predicate);
+				if (run) return run;
+			}
+			assert.fail(`timed out waiting for ${label}`);
+		};
+		const startedAt = Date.now();
+		const executor = makeExecutor([makeAgent("echo")], {}, false, undefined, true, new Map(), new Map(), undefined, undefined, undefined, undefined, () => {});
+		const single = executor.execute(`${nonce}-single`, { agent: "echo", task: `Single ${nonce}`, async: false }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		const workflow = await executor.execute(`${nonce}-workflow`, { async: true, mission: false, workflowScript: `return (await runs.run("child", { agent: "echo", task: "Workflow child ${nonce}" })).output;` }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		const workflowRunId = workflow.details.asyncId;
+		assert.ok(workflowRunId, workflow.content[0]?.text);
+		try {
+			const running = await waitForRecord("the single run's running record", (run) => run.updatedAt >= startedAt && run.parentWorkflowRunId === undefined && run.children[0]?.status === "running");
+			assert.equal(running.ownerPid, process.pid);
+			assert.equal(running.ownerPidNamespaceScope, currentPidNamespaceScope());
+			assert.equal(running.ownerBootId, currentBootId());
+			assert.match(running.children[0]?.sessionFile ?? "", /\.jsonl$/, "the record points at the child's transcript");
+			const workflowChild = await waitForRecord("the workflow child's running record", (run) => run.parentWorkflowRunId === workflowRunId);
+			assert.equal(workflowChild.children[0]?.status, "running");
+			assert.equal(workflowChild.ownerPid, process.pid);
+
+			fs.writeFileSync(release, "go");
+			const result = await single;
+			assert.equal(result.isError, undefined, result.content[0]?.text);
+			const finished = historyRuns().find((run) => run.runId === running.runId);
+			assert.equal(finished?.children[0]?.status, "completed");
+			assert.equal(finished?.ownerPid, undefined);
+			const childFinished = await waitForRecord("the workflow child's final record", (run) => run.runId === workflowChild.runId && run.children[0]?.status !== "running");
+			assert.equal(childFinished.children[0]?.status, "completed");
+			assert.equal(childFinished.ownerPid, undefined);
+		} finally {
+			fs.writeFileSync(release, "go");
+			await single.catch(() => undefined);
+		}
+	});
+
+	it("replaces the running record of an attached foreground run that is aborted mid-run", { timeout: 60_000, skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const nonce = `foreground-running-abort-${Date.now()}`;
+		const startedAt = Date.now();
+		mockPi.onCall({ matchArgIncludes: `Abort ${nonce}`, hangUntilAbort: true });
+		const historyFile = path.join(DIRS.results, "foreground-history.json");
+		const runningRecord = () => {
+			try {
+				return (JSON.parse(fs.readFileSync(historyFile, "utf-8")) as { runs: Array<{ runId: string; updatedAt: number; children: Array<{ status: string }> }> }).runs.find((run) => run.updatedAt >= startedAt && run.children[0]?.status === "running");
+			} catch {
+				return undefined;
+			}
+		};
+		const controller = new AbortController();
+		const executor = makeExecutor([makeAgent("echo")]);
+		const pending = executor.execute(`${nonce}-single`, { agent: "echo", task: `Abort ${nonce}`, async: false }, controller.signal, undefined, makeMinimalCtx(tempDir));
+		let running = runningRecord();
+		for (const deadline = Date.now() + 15_000; !running && Date.now() < deadline; running = runningRecord()) await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.ok(running, "the run saved a running record");
+		controller.abort();
+		await pending.catch(() => undefined);
+		const after = (JSON.parse(fs.readFileSync(historyFile, "utf-8")) as { runs: Array<{ runId: string; children: Array<{ status: string }> }> }).runs.find((run) => run.runId === running.runId);
+		assert.notEqual(after?.children[0]?.status ?? "removed", "running", "an aborted run never stays running in history");
+	});
 
 	it("routes registered structured text delegation through the concurrent executor", async () => {
 		const literalJsonText = '{"looks":"json"}';

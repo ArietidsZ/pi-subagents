@@ -10,7 +10,11 @@ import { registerInspector } from "../../src/api/inspectors.ts";
 import { getInspectorPlugins, registerInspectorEventListener } from "../../src/inspectors/plugins.ts";
 import { EXTERNAL_RUN_REGISTRY_KEY, EXTERNAL_RUN_REGISTRY_VERSION, registerExternalRun } from "../../src/api/external-runs.ts";
 import { collectFleetSnapshot, openSubagentFleet, SubagentFleetComponent } from "../../src/tui/fleet.ts";
-import { persistForegroundRunHistory, restoreForegroundRunHistory } from "../../src/runs/foreground/foreground-history.ts";
+import { discardRunningForegroundRun, FOREGROUND_OWNER_EXITED_STOP_ERROR, persistForegroundRunHistory, persistRunningForegroundRun, restoreForegroundRunHistory } from "../../src/runs/foreground/foreground-history.ts";
+import { resetBootIdForTesting } from "../../src/runs/background/boot-id.ts";
+import { currentPidNamespaceScope } from "../../src/runs/background/pid-namespace.ts";
+import { inspectSubagentStatus } from "../../src/runs/background/run-status.ts";
+import { spawnSync } from "node:child_process";
 import { FLEET_STATUS_WIDGET_KEY } from "../../src/tui/fleet-status.ts";
 import { setMainThinkingLevelSource } from "../../src/tui/running-tone.ts";
 import { registerLivePromptAudit, rewritePromptWithGuidance } from "../../src/runs/foreground/prompt-audit.ts";
@@ -990,6 +994,110 @@ describe("native subagent fleet", () => {
 			persistForegroundRunHistory(state, { resultsDir });
 			const persisted = JSON.parse(fs.readFileSync(path.join(resultsDir, "foreground-history.json"), "utf-8")) as { runs: Array<{ runId: string }> };
 			assert.deepEqual(persisted.runs.map((run) => run.runId), ["terminal"]);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a running foreground record in the file and loads it as stopped only once its Pi process is gone", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-foreground-running-"));
+		try {
+			const resultsDir = path.join(root, "results");
+			const sessionFile = path.join(root, "child-session.jsonl");
+			fs.writeFileSync(sessionFile, "{}\n", "utf-8");
+			const exited = spawnSync(process.execPath, ["-e", ""]).pid;
+			assert.ok(exited);
+			const running = (runId: string, owner: { ownerPid: number; ownerPidNamespaceScope?: string; ownerBootId?: string }) => ({
+				runId,
+				mode: "single" as const,
+				cwd: root,
+				sessionId: "session-current",
+				updatedAt: 100,
+				parentWorkflowRunId: "workflow-parent",
+				children: [{ agent: "worker", index: 0, status: "running" as const, activityState: "active" as const, currentTool: "bash", sessionFile, resumeContract: { outputMode: "inline" as const } }],
+				...owner,
+			});
+			const scope = currentPidNamespaceScope();
+			persistRunningForegroundRun(running("owner-dead", { ownerPid: exited, ...(scope ? { ownerPidNamespaceScope: scope } : {}) }), { resultsDir });
+			persistRunningForegroundRun(running("owner-alive", { ownerPid: process.pid, ...(scope ? { ownerPidNamespaceScope: scope } : {}), ownerBootId: "boot-now" }), { resultsDir });
+			// This test process is alive, so only the boot id can say this owner is gone.
+			persistRunningForegroundRun(running("owner-rebooted", { ownerPid: process.pid, ...(scope ? { ownerPidNamespaceScope: scope } : {}), ownerBootId: "boot-before" }), { resultsDir });
+			persistRunningForegroundRun(running("owner-other-namespace", { ownerPid: exited, ownerPidNamespaceScope: "pid:[container]" }), { resultsDir });
+			const historyFile = path.join(resultsDir, "foreground-history.json");
+			const fileRuns = () => new Map((JSON.parse(fs.readFileSync(historyFile, "utf-8")) as { runs: Array<{ runId: string; ownerPid?: number; children: Array<{ status: string }> }> }).runs.map((run) => [run.runId, run]));
+			assert.deepEqual([...fileRuns().values()].map((run) => [run.runId, run.children[0]?.status, run.ownerPid !== undefined]).sort(), [
+				["owner-alive", "running", true], ["owner-dead", "running", true], ["owner-other-namespace", "running", true], ["owner-rebooted", "running", true],
+			]);
+
+			const restored = stateForTest();
+			restored.baseCwd = root;
+			resetBootIdForTesting(() => "boot-now");
+			try {
+				assert.equal(restoreForegroundRunHistory(restored, { resultsDir }), 2);
+			} finally {
+				resetBootIdForTesting();
+			}
+			assert.deepEqual([...restored.foregroundRuns!.keys()].sort(), ["owner-dead", "owner-rebooted"]);
+			const stopped = restored.foregroundRuns!.get("owner-dead")!;
+			assert.deepEqual(stopped.children[0], { agent: "worker", index: 0, status: "stopped", exitCode: 1, error: FOREGROUND_OWNER_EXITED_STOP_ERROR, finalOutput: FOREGROUND_OWNER_EXITED_STOP_ERROR, sessionFile, resumeContract: { outputMode: "inline" } });
+			assert.equal(stopped.ownerPid, undefined);
+			assert.equal(stopped.parentWorkflowRunId, "workflow-parent");
+
+			persistForegroundRunHistory(restored, { resultsDir });
+			const merged = fileRuns();
+			assert.equal(merged.get("owner-dead")?.children[0]?.status, "stopped");
+			assert.equal(merged.get("owner-dead")?.ownerPid, undefined);
+			assert.equal(merged.get("owner-alive")?.children[0]?.status, "running", "a live owner's record survives another process's save");
+			assert.equal(merged.get("owner-other-namespace")?.children[0]?.status, "running");
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("replaces a running foreground record with the final save, and discards it only while this process still owns it", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-foreground-running-replace-"));
+		try {
+			const resultsDir = path.join(root, "results");
+			const running = (runId: string, ownerPid = process.pid) => ({ runId, mode: "single" as const, cwd: root, sessionId: "session-current", updatedAt: 100, ownerPid, children: [{ agent: "worker", index: 0, status: "running" as const }] });
+			persistRunningForegroundRun(running("finished"), { resultsDir });
+			persistRunningForegroundRun(running("threw"), { resultsDir });
+			persistRunningForegroundRun(running("other-owner", process.pid + 1), { resultsDir });
+			const state = stateForTest();
+			state.foregroundRuns!.set("finished", { runId: "finished", mode: "single", cwd: root, sessionId: "session-current", updatedAt: 200, children: [{ agent: "worker", index: 0, status: "completed", finalOutput: "done" }] });
+			persistForegroundRunHistory(state, { resultsDir });
+			discardRunningForegroundRun("threw", { resultsDir });
+			discardRunningForegroundRun("finished", { resultsDir });
+			discardRunningForegroundRun("other-owner", { resultsDir });
+			const runs = (JSON.parse(fs.readFileSync(path.join(resultsDir, "foreground-history.json"), "utf-8")) as { runs: Array<{ runId: string; ownerPid?: number; children: Array<{ status: string }> }> }).runs;
+			assert.deepEqual(runs.map((run) => [run.runId, run.children[0]?.status, run.ownerPid]).sort(), [["finished", "completed", undefined], ["other-owner", "running", process.pid + 1]]);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("shows a foreground child cut off by a Pi exit as interrupted, with its resume id only when a transcript exists", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-foreground-interrupted-"));
+		try {
+			const sessionFile = path.join(root, "child-session.jsonl");
+			fs.writeFileSync(sessionFile, "{}\n", "utf-8");
+			const state = stateForTest();
+			state.baseCwd = root;
+			const interrupted = (runId: string, extra: { sessionFile?: string } = {}) => ({ runId, mode: "single" as const, cwd: root, sessionId: state.currentSessionId!, updatedAt: 100, children: [{ agent: "worker", index: 0, status: "stopped" as const, exitCode: 1, error: FOREGROUND_OWNER_EXITED_STOP_ERROR, finalOutput: FOREGROUND_OWNER_EXITED_STOP_ERROR, ...extra }] });
+			state.foregroundRuns!.set("run-interrupted", interrupted("run-interrupted", { sessionFile }));
+			const statusText = (id: string) => {
+				const status = inspectSubagentStatus({ id }, { asyncDirRoot: path.join(root, "runs"), resultsDir: path.join(root, "results"), state });
+				return status.content[0]?.type === "text" ? status.content[0].text : "";
+			};
+			assert.match(statusText("run-interrupted"), /^1\. worker interrupted when Pi exited · resume run-interrupted, exit 1/m);
+			const component = new SubagentFleetComponent({ terminal: { rows: 28, columns: 140 }, requestRender() {} } as never, theme as never, state, () => {}, { refreshMs: 60_000 });
+			try {
+				assert.ok(component.render(140).some((line) => line.includes("State: interrupted when Pi exited · resume run-interrupted")));
+			} finally {
+				component.dispose();
+			}
+
+			state.foregroundRuns!.set("run-no-transcript", interrupted("run-no-transcript"));
+			assert.match(statusText("run-no-transcript"), /^1\. worker interrupted when Pi exited, exit 1/m);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
