@@ -27,15 +27,14 @@ function isTerminalState(state: AsyncStatus["state"]): boolean {
 function isCorruptStatusError(error: unknown, statusPath: string): boolean {
 	const message = error instanceof Error ? error.message : String(error);
 	return message.startsWith(`Failed to parse async status file '${statusPath}'`)
-		|| message.startsWith(`Failed to validate async status file '${statusPath}'`)
-		|| message.startsWith(`Invalid async status '${statusPath}'`);
+		|| message.startsWith(`Failed to validate async status file '${statusPath}'`);
 }
 
 // A corrupt indexed status is retried on every read. Emit a warning only when
 // its observed file identity or parse outcome changes, like active-run diagnostics.
 const reportedCorruptTerminalStatus = new Map<string, string>();
 
-function warnCorruptTerminalStatus(runId: string, statusPath: string, error: unknown): void {
+function warnCorruptTerminalStatus(runId: string, statusPath: string, error: unknown, onCorruptStatus?: (warning: string) => void): void {
 	let fileSignature = "unavailable";
 	try {
 		const stat = fs.statSync(statusPath);
@@ -47,7 +46,9 @@ function warnCorruptTerminalStatus(runId: string, statusPath: string, error: unk
 	const signature = `${fileSignature}\n${message}`;
 	if (reportedCorruptTerminalStatus.get(statusPath) === signature) return;
 	reportedCorruptTerminalStatus.set(statusPath, signature);
-	console.error(`[pi-subagents] Skipping indexed terminal run '${runId}' with corrupt status at '${statusPath}': ${message}.`);
+	const warning = `Skipping indexed terminal run '${runId}' with corrupt status at '${statusPath}': ${message}`;
+	if (onCorruptStatus) onCorruptStatus(warning);
+	else console.error(`[pi-subagents] ${warning}`);
 }
 
 function indexRoot(asyncDirRoot: string): string {
@@ -178,7 +179,7 @@ export function readTerminalRunToolCallIndex(asyncDirRoot: string, toolCallId: s
 	return runIds;
 }
 
-export function readRecentTerminalRunIndex(asyncDirRoot: string, options: { sessionId?: string; limit?: number; endedAfter?: number } = {}): string[] {
+export function readRecentTerminalRunIndex(asyncDirRoot: string, options: { sessionId?: string; limit?: number; endedAfter?: number; onCorruptStatus?: (warning: string) => void } = {}): string[] {
 	const limit = options.limit === undefined ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(options.limit));
 	const candidates = recentMarkerFiles(sessionDirs(asyncDirRoot, options.sessionId), limit, options.endedAfter);
 	const runIds: string[] = [];
@@ -201,7 +202,7 @@ export function readRecentTerminalRunIndex(asyncDirRoot: string, options: { sess
 			status = readStatus(asyncDir);
 		} catch (error) {
 			if (!isCorruptStatusError(error, statusPath)) throw error;
-			warnCorruptTerminalStatus(entry.runId, statusPath, error);
+			warnCorruptTerminalStatus(entry.runId, statusPath, error, options.onCorruptStatus);
 			continue;
 		}
 		if (!status || !isTerminalState(status.state) || status.sessionId !== entry.sessionId || (status.runId && status.runId !== entry.runId)) {

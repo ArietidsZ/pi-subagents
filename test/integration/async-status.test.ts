@@ -1289,6 +1289,14 @@ describe("async status helpers", () => {
 			assert.deepEqual(fs.readFileSync(marker), indexBytes);
 			assert.deepEqual(fs.readFileSync(aliasMarker), indexBytes);
 
+			fs.writeFileSync(corruptStatus, Buffer.alloc(33, 0));
+			const notices: string[] = [];
+			const listed = listAsyncRuns(root, { sessionId: "session-a", states: ["complete"], reconcile: false, onCorruptStatus: (warning) => notices.push(warning) });
+			assert.deepEqual(listed.map((run) => run.id), ["terminal-good-b", "terminal-good-a"]);
+			assert.equal(notices.length, 1);
+			assert.match(notices[0]!, /^Skipping indexed terminal run 'terminal-corrupt' with corrupt status at .*Failed to parse async status file/);
+			assert.equal(diagnostics.filter((line) => line.includes("corrupt status")).length, 1);
+
 			fs.writeFileSync(corruptStatus, JSON.stringify({
 				runId: "terminal-corrupt",
 				sessionId: "session-a",
