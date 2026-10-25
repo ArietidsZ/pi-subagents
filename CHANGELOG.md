@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The bundled `pi-subagents` skill is about a quarter of its old size per use (about 3k instead of 10.6k tokens on a typical load). It keeps the common calls, the workflow and resume shapes, and the delegation rules, and points to exact `guide` sections for everything else instead of copying the reference docs. In a 117-run comparison, agents using it blocked on a child (`async: false`) 2 times instead of 10. `/council` no longer loads an 11k-token execution reference.
+
 ### Fixed
 
 - A recent background run whose `status.json` no longer parses (for example a file filled with NUL bytes) no longer stops `/subagents-fleet` and status listings from showing your other runs. The run is skipped with one warning, which repeats only if the file changes; its files are left as they are, and asking for that run by id still reports the parse error. Thanks to [@ozand](https://github.com/ozand) for #3040 and #3041.

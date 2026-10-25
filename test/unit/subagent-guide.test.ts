@@ -33,14 +33,12 @@ describe("subagent guide", () => {
 		assert.ok(SUBAGENT_ACTIONS.includes("guide"));
 	});
 
-	it("serves the council protocol and its references without loaded skills", () => {
+	it("serves the council protocol and its reference without loaded skills", () => {
 		const guide = readSubagentGuide("council");
 
 		assert.match(guide, /# Council Mode/);
 		assert.match(guide, /skills\/council-mode\/references\/pass-contracts\.md -->/);
-		assert.match(guide, /skills\/pi-subagents\/references\/execution-controls\.md -->/);
-		assert.match(guide, /Completed external-job runs can use `action: "resume"` for provider follow-up when the registered provider exposes `followUp\(input\)`/);
-		assert.doesNotMatch(guide, /External job profiles do not support[^.\n]*steer\/resume/);
+		assert.doesNotMatch(guide, /skills\/pi-subagents\//);
 	});
 
 	it("documents external CLI runner limits in packaged guide topics", () => {
