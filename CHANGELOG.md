@@ -5,6 +5,7 @@
 ### Fixed
 
 - When text written after a tool call reaches Pi only as a summary, as happens through the Claude Agent SDK used by pi-claude-bridge, a lost ```` ```js workflow ```` block no longer means writing the script to a file first. The error now says to resend the source as `options: { script: "..." }`, which runs it directly. The tool's schema and description are unchanged, so other providers see no difference.
+- `subagent` calls from providers that send nested tool values as strings, such as `options: { capabilities: "true", timeoutMs: "120000" }`, no longer fail with "must be boolean" or "must be integer". Values inside `options` now get the same type conversion Pi already applies to top-level parameters. (#3048) Thanks to [@5hiri](https://github.com/5hiri) for the report and [@isjiajia01](https://github.com/isjiajia01) for narrowing it down.
 
 ## [0.82.1] - 2026-10-24
 
