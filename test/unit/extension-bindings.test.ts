@@ -12,9 +12,9 @@ import {
 } from "../../src/runs/shared/extension-bindings.ts";
 import { buildInProcessChildLaunch } from "../../src/runs/shared/child-launch.ts";
 
-function childEnv(extensionBindings?: ExtensionBindings, host: "parent" | "runner" = "runner"): Record<string, string | undefined> {
+function childLaunch(extensionBindings?: ExtensionBindings, host: "parent" | "runner" = "runner") {
 	const normalizedExtensionBindings = normalizeExtensionBindings(extensionBindings)?.value;
-	const launch = buildInProcessChildLaunch({
+	return buildInProcessChildLaunch({
 		host,
 		cwd: os.tmpdir(),
 		childAgentName: "worker",
@@ -24,8 +24,11 @@ function childEnv(extensionBindings?: ExtensionBindings, host: "parent" | "runne
 		inheritGlobalContext: false,
 		inheritSkills: false,
 		extensionBindings: normalizedExtensionBindings,
-	});
-	return launch.session.processEnv ?? {};
+	}).session;
+}
+
+function childEnv(extensionBindings?: ExtensionBindings, host: "parent" | "runner" = "runner"): Record<string, string | undefined> {
+	return childLaunch(extensionBindings, host).processEnv ?? {};
 }
 
 describe("extension bindings", () => {
@@ -56,7 +59,16 @@ describe("extension bindings", () => {
 		assert.equal(Object.hasOwn(omitted, PI_SUBAGENT_EXTENSION_BINDINGS_ENV), true);
 		assert.equal(omitted[PI_SUBAGENT_EXTENSION_BINDINGS_ENV], undefined);
 		assert.equal(childEnv({ "child/1": { z: 1, a: 2 } })[PI_SUBAGENT_EXTENSION_BINDINGS_ENV], '{"child/1":{"a":2,"z":1}}');
-		assert.deepEqual(childEnv({ "child/1": true }, "parent"), {}, "the parent host never writes child environment values");
+		assert.equal(childLaunch(undefined, "runner").restoreProcessEnv, undefined, "the runner hosts only children and keeps the last child's values");
+	});
+
+	it("gives an in-process foreground child only its bindings, restored after start", () => {
+		const launch = childLaunch({ "child/1": { z: 1, a: 2 } }, "parent");
+		assert.deepEqual(launch.processEnv, { [PI_SUBAGENT_EXTENSION_BINDINGS_ENV]: '{"child/1":{"a":2,"z":1}}' });
+		assert.equal(launch.restoreProcessEnv, true);
+		const omitted = childLaunch(undefined, "parent");
+		assert.equal(Object.hasOwn(omitted.processEnv ?? {}, PI_SUBAGENT_EXTENSION_BINDINGS_ENV), true, "an unbound child clears bindings it would otherwise inherit from its host");
+		assert.equal(omitted.processEnv?.[PI_SUBAGENT_EXTENSION_BINDINGS_ENV], undefined);
 	});
 
 	it("removes ambient bindings from external runner environments", () => {
