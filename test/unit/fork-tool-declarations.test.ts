@@ -344,8 +344,8 @@ describe("a child's context handler", () => {
 			registerTool: () => {},
 			events: { on: () => () => {} },
 		} as never, { fanoutChild: false, depth: 1, waitTool: { enabled: false }, fast: false, ...config });
-		const ctx = { model: { api: "anthropic-messages" }, sessionManager: { getHeader: () => ({ id: "fork", timestamp: new Date(FORKED_AT).toISOString() }) } };
-		return (messages: unknown[]) => (handlers.get("context")!({ messages }, ctx) as { messages: unknown[] } | undefined)?.messages ?? messages;
+		const ctx = { model: { api: "anthropic-messages" }, sessionManager: { getHeader: () => ({ id: "fork", timestamp: new Date(FORKED_AT).toISOString() }), buildSessionProjection: () => ({ messages: [] }) } };
+		return (messages: unknown[]) => (handlers.get("context_with_system")!({ messages }, ctx) as { messages: unknown[] } | undefined)?.messages ?? messages;
 	};
 	const notice = (timestamp: number) => ({ role: "custom", customType: "subagent-notify", content: "done", display: false, timestamp });
 	const call = (timestamp: number) => ({ role: "assistant", content: [{ type: "toolCall", id: `call_${timestamp}`, name: "subagent", arguments: {} }], timestamp });
