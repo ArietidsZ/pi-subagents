@@ -10,7 +10,7 @@ workflow fit choose a shape after that; they do not authorize a launch.
 | --- | --- | --- | --- |
 | `scout` | Codebase recon | fresh | fast |
 | `worker` | Implementation, the single writer | fresh | fast capable |
-| `reviewer` | Code and plan review; fix passes only when asked | fresh | strong, high thinking for serious reviews |
+| `reviewer` | Code and plan review; read-only (send fixes to `worker`) | fresh | strong, high thinking for serious reviews |
 | `researcher` | Web and primary-source research | fresh | default |
 | `delegate` | Generic bounded task | fresh | default |
 | `oracle` | Rare escalation on direction, drift, root cause, or hard tradeoffs | fork (fresh if the parent session is not persisted yet) | top reasoning, read-only |
@@ -52,8 +52,8 @@ whether the named finding is fixed, whether the fix broke something nearby,
 and whether earlier notes still stand. Bot comments are first classified
 VALID, STALE, INVALID, or OUT-OF-POLICY against the current head.
 
-**Review loop.** Writer, fresh reviewers, accepted fixes back to the same
-writer, capped at 3 rounds. Details in [orchestration.md](orchestration.md#review-loop).
+**Review loop.** Writer, fresh reviewers, accepted fixes to one writer,
+capped at 3 rounds. Details in [orchestration.md](orchestration.md#review-loop).
 
 **Parallel research.** `researcher` for docs, specs, recent changes, and
 primary sources, plus `scout` for local files, patterns, and integration

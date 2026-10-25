@@ -57,7 +57,7 @@ yield; completion wakes the parent.
 1. Inspect the source, diff, issue, or plan directly.
 2. One writer implements inside its boundary and runs focused validation that can fail for the changed behavior.
 3. When the delegation contract calls for independent review, fresh-context read-only reviewers inspect the actual worktree. Otherwise parent inspection is enough; skip review for trivial wording, renames, or local probes.
-4. The parent classifies findings (below) and sends accepted fixes to the same writer, resumed with the latest run id.
+4. The parent classifies findings (below) and sends accepted fixes to one writer: resume the original worker with its latest run id, or launch one forked `worker` as `/review-loop` does.
 5. Re-run affected validation and review only the changed blast radius.
 6. Stop when no blocker or fix worth doing now remains, an unapproved product, scope, or architecture decision appears, or the round cap is reached (default 3). Do not loop for polish. Children never decide the loop outcome.
 

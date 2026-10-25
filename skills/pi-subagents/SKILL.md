@@ -125,7 +125,8 @@ work from the next request. Read one section, not a whole topic:
 | --- | --- |
 | Script API: `runs.*`, `state`, limits | `workflows/scripted-workflows` |
 | Typed gates, host commands, rolling fanout | `workflows/typed-post-run-checks-and-typed-steps`, `workflows/host-command-steps`, `workflows/advanced-rolling-child-runs` |
-| Execution fields (`context`, `output`, `worktree`, `control`, budgets) | `tool-reference/execution-parameters`, `tool-reference/output-mode-details` |
+| Budgets, timeouts, `baseRef`, `gate`, `output` | `tool-reference/execution-parameters`, `tool-reference/output-mode-details` |
+| Fresh or forked context | `tool-reference/fork-context-details` |
 | Resume, steer modes, stop, status | `tool-reference/retained-children`, `tool-reference/resume`, `tool-reference/steer`, `tool-reference/stop`, `tool-reference/status` |
 | Acceptance and review gates | `tool-reference/acceptance-gates` |
 | Worktrees and handoffs | `workflows/worktree-isolation` |

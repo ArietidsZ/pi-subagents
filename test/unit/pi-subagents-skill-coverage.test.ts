@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { readSubagentGuide, SUBAGENT_GUIDE_TOPICS } from "../../src/extension/subagent-guide.ts";
+import { readSubagentGuide } from "../../src/extension/subagent-guide.ts";
 import { SubagentParams } from "../../src/extension/schemas.ts";
 import { SUBAGENT_ACTIONS } from "../../src/shared/types.ts";
 
@@ -15,8 +15,7 @@ describe("pi-subagents skill names resolve in the tool", () => {
 	for (const file of skillFiles) {
 		it(`${file} names only real guide sections, actions, links, and call fields`, () => {
 			const text = read(file);
-			const topics = SUBAGENT_GUIDE_TOPICS.join("|");
-			for (const [, address] of text.matchAll(new RegExp(`\`((?:${topics})/[a-z0-9-]+)\``, "g"))) {
+			for (const [, address] of text.matchAll(/`([a-z][a-z-]*\/[a-z0-9-]+)`/g)) {
 				assert.doesNotMatch(readSubagentGuide(address!), /^Unknown (subagents guide topic|section)/, `${file}: guide section ${address}`);
 			}
 			for (const [, action] of text.matchAll(/action: "([^"]+)"/g)) {
