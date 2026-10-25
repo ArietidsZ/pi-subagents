@@ -20,6 +20,9 @@ import { buildRunnerChildLaunch } from "../../src/runs/background/runner-child-l
 import { runChildSession } from "../../src/runs/background/run-child-session.ts";
 import { getAgentDir } from "../../src/shared/utils.ts";
 import registerHerdrPiBridge, { resolveRemoteHerdrResources } from "../../src/extension/herdr-pi-bridge.ts";
+import { executeAsyncSingle } from "../../src/runs/background/async-execution.ts";
+import { DIRS } from "../../src/shared/types.ts";
+import { makeAgent } from "../support/helpers.ts";
 
 const machine = { provider: "herdr" as const, id: "m1", label: "workmac", target: "remote.example", cwd: "/remote/repo" };
 const runtime = { runId: "run", agent: "worker", childIndex: 0, fanoutChild: false, depth: 1, maxDepth: 1, inheritProjectContext: true, inheritGlobalContext: true, inheritSkills: false, fast: false, waitTool: { enabled: true } };
@@ -63,7 +66,7 @@ describe("pane-native Herdr placement public contracts", { skip: process.platfor
 		assert.equal(seen?.cwd, "/remote/repo");
 	});
 
-	it("rejects unrepresented required and MCP tool contracts at the public factory boundary before provisioning", async () => { let provisioned = 0; const factory = createPlacementAwareChildSessionFactory({ async create() { return child; }, async dispose() {} }, async () => { provisioned++; return child; }); await assert.rejects(factory.create({ ...launch(true), runtime: { ...runtime, requiredTools: ["required_missing"] } }), /required-tool/u); await assert.rejects(factory.create({ ...launch(true), runtime: { ...runtime, mcpDirectTools: ["mcp_tool"] } }), /MCP direct tools/u); assert.equal(provisioned, 0); });
+	it("rejects MCP tool contracts at the public factory boundary before provisioning, and leaves required tools to the remote acknowledgement", async () => { let provisioned = 0; const factory = createPlacementAwareChildSessionFactory({ async create() { return child; }, async dispose() {} }, async () => { provisioned++; return child; }); await assert.rejects(factory.create({ ...launch(true), runtime: { ...runtime, mcpDirectTools: ["mcp_tool"] } }), /MCP direct tools/u); assert.equal(provisioned, 0); await factory.create({ ...launch(true), runtime: { ...runtime, requiredTools: ["read"] } }); assert.equal(provisioned, 1); });
 
 	it("propagates resolved placement into the detached native child launch", () => {
 		const built = buildRunnerChildLaunch({ agent: "worker", task: "inspect", machine, cwd: machine.cwd, tools: ["read"], inheritProjectContext: true, inheritGlobalContext: true, inheritSkills: false }, { cwd: "/local/repo", id: "run-route", flatIndex: 0 }, { sessionEnabled: true, watchdogStatus() {} });
@@ -78,12 +81,54 @@ describe("pane-native Herdr placement public contracts", { skip: process.platfor
 		assert.equal("tools" in wire, false); assert.doesNotMatch(JSON.stringify(wire), /remote\.example|\/local\/repo|callback|token/iu);
 		assert.deepEqual(serializeHerdrPiLaunch({ ...clean, remoteResources: { ...clean.remoteResources!, reads: ["remote-only.md"] } }).resources.reads, ["remote-only.md"]);
 		assert.doesNotMatch(JSON.stringify(wire), /LOCAL_SECRET_PROMPT|Users\/local/u);
-		assert.throws(() => serializeHerdrPiLaunch({ ...clean, storage: { kind: "file", sessionFile: "/local/session.jsonl" } }), /fork, resume, or revival/u);
 		assert.throws(() => serializeHerdrPiLaunch({ ...clean, extensionPaths: ["/local/private.ts"] }), /cannot transfer local extension paths/u);
 		assert.doesNotMatch(JSON.stringify(serializeHerdrPiLaunch({ ...clean, hooks: [{ name: "local", factory() {} }] })), /callback|factory|local/u);
 		assert.throws(() => serializeHerdrPiLaunch({ ...clean, runtime: { ...runtime, nestedRoute: { rootRunId: "r", eventSink: "/local/events", controlInbox: "/local/control", capabilityToken: "SECRET" } } }), /Nested delegation/u);
 		assert.throws(() => serializeHerdrPiLaunch({ ...clean, processEnv: { MCP_DIRECT_TOOLS: "local-server" } }), /bindings, MCP selections, or process environment/u);
 		assert.throws(() => serializeHerdrPiLaunch({ ...clean, runtime: { ...runtime, permissions: { rules: { bash: "deny" } } as never } }), /permission rules/u);
+	});
+
+	it("launches a fresh placed child that was given a local session path, and refuses one that would restore a transcript", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "placed-session-"));
+		try {
+			const sessionFile = path.join(root, "run-0", "session.jsonl");
+			const build = () => buildRunnerChildLaunch({ agent: "worker", task: "inspect", machine, cwd: machine.cwd, sessionFile, inheritProjectContext: true, inheritGlobalContext: true, inheritSkills: false }, { cwd: "/local/repo", id: "run-fresh", flatIndex: 0 }, { sessionEnabled: true, watchdogStatus() {} }).session;
+			assert.equal(serializeHerdrPiLaunch(build()).resources.agent, "worker");
+			fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "forked" })}\n`);
+			assert.throws(() => serializeHerdrPiLaunch(build()), /fork, resume, or revival/u);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("places the builtin scout, whose tool list becomes required tools", () => {
+		const scoutTools = /^tools:\s*(.+)$/mu.exec(fs.readFileSync(new URL("../../agents/scout.md", import.meta.url), "utf8"))![1]!.split(",").map((tool) => tool.trim());
+		const built = buildRunnerChildLaunch({ agent: "scout", task: "inspect", machine, cwd: machine.cwd, tools: scoutTools, inheritProjectContext: true, inheritGlobalContext: true, inheritSkills: false }, { cwd: "/local/repo", id: "run-scout", flatIndex: 0 }, { sessionEnabled: true, watchdogStatus() {} }).session;
+		assert.ok(built.runtime.requiredTools?.includes("read"));
+		assert.equal(serializeHerdrPiLaunch(built).resources.agent, "scout");
+	});
+
+	it("refuses up front to revive a transcript onto a machine", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "placed-revival-"));
+		const runId = `placed-revival-${Date.now().toString(36)}`;
+		try {
+			const sessionFile = path.join(root, "sessions", "run-0", "session.jsonl");
+			fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+			fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "local" })}\n`);
+			const result = executeAsyncSingle(runId, {
+				agent: "worker", task: "Continue", agentConfig: makeAgent("worker", { machine: "workmac" }),
+				ctx: { pi: { events: { emit() {} } }, cwd: root, currentSessionId: "placed-revival" },
+				artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+				shareEnabled: false, sessionRoot: path.join(root, "sessions"), maxSubagentDepth: 1,
+				sessionFile,
+				revivalLease: { sessionFile, runId, sourceRunId: "placed-source" },
+			});
+			assert.equal(result.isError, true);
+			assert.match(result.content[0]?.text ?? "", /does not support fork, resume, or revival/u);
+			assert.equal(fs.existsSync(path.join(DIRS.async, runId)), false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("parses literal tagged Herdr 0.9 success envelopes", () => {

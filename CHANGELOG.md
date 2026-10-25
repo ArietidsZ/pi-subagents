@@ -5,6 +5,7 @@
 ### Fixed
 
 - When text written after a tool call reaches Pi only as a summary, as happens through the Claude Agent SDK used by pi-claude-bridge, a lost ```` ```js workflow ```` block no longer means writing the script to a file first. The error now says to resend the source as `options: { script: "..." }`, which runs it directly. The tool's schema and description are unchanged, so other providers see no difference.
+- A fresh child placed on a machine (a Rex tab, a Rex machine over SSH, or a Herdr pane) launches. Every such launch was refused with "does not support fork, resume, or revival" because each child is handed a local session file path, which placement read as a request to restore a transcript. Builtin agents with a tools list, such as `scout`, can be placed too: their required tools are checked against the tools the remote Pi activates. Forked context is still refused on a machine, and so is a resume that would place the child again, since a placed child's transcript stays on that machine. (#3043) Thanks to [@honbolau](https://github.com/honbolau) for the report and [@isjiajia01](https://github.com/isjiajia01) for tracing it.
 
 ## [0.82.1] - 2026-10-24
 

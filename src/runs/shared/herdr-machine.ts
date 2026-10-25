@@ -269,6 +269,9 @@ export function resolveMachinePlacement(input: ResolveHerdrMachinePlacementInput
 	return resolveHerdrMachinePlacement(input);
 }
 
+/** A placed Pi keeps its transcript on the pane's machine, so it can't start from a local one. */
+export const PLACED_RESTORE_UNSUPPORTED = "Pane-native remote Pi does not support fork, resume, or revival; use fresh context.";
+
 export function formatHerdrMachineRunnerUnsupported(input: {
 	machine?: string;
 	agentName: string;
