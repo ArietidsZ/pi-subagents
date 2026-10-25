@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import type { AssistantMessage, Message, Model, ToolResultMessage } from "@earendil-works/pi-ai";
+import { ExtensionRunner } from "@earendil-works/pi-coding-agent";
 import { convertResponsesMessages } from "@earendil-works/pi-ai/api/openai-responses-shared";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import { createEventBus } from "../support/helpers.ts";
@@ -1183,11 +1184,30 @@ describe("subagent prompt runtime", () => {
 		assert.equal(handlers[0]!({ systemPrompt: finalized!.systemPrompt }), undefined);
 	});
 
+	it("strips subagent history without moving Pi's system messages", async () => {
+		const handlers = new Map<string, Function[]>();
+		registerSubagentPromptRuntime({
+			on: (name: string, fn: Function) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
+			registerTool: () => {},
+			events: { on: () => () => {} },
+		} as never, childConfig());
+		const runner = new ExtensionRunner([{ path: "child-runtime", handlers } as never], {} as never, process.cwd(), undefined as never, undefined as never);
+		const leading = { role: "system", content: "Base prompt", timestamp: 0 };
+		const task = { role: "user", content: "Task", timestamp: 1 };
+		const call = { role: "assistant", content: [{ type: "toolCall", id: "call_1", name: "subagent", arguments: {} }], timestamp: 2 };
+		const result = { role: "toolResult", toolCallId: "call_1", toolName: "subagent", content: [], isError: false, timestamp: 3 };
+		// A mid-conversation system message must stay where it is, or the cached prefix ends at the tools.
+		const sectionUpdate = { role: "system", content: "", sections: { time: "Now: 10:00" }, timestamp: 4 };
+		const next = { role: "user", content: "Continue", timestamp: 5 };
+
+		assert.deepEqual(await runner.emitContext([leading, task, call, result, sectionUpdate, next] as never), [leading, task, sectionUpdate, next]);
+	});
+
 	it("filters parent-only artifacts from polluted fork context while preserving ordinary history", () => {
 		let contextHandler: ((event: { messages: unknown[] }) => { messages: unknown[] } | undefined) | undefined;
 		registerSubagentPromptRuntime({
 			on(event: string, handler: (payload: { messages: unknown[] }) => { messages: unknown[] } | undefined) {
-				if (event === "context") contextHandler = handler;
+				if (event === "context_with_system") contextHandler = handler;
 			},
 		} as { on(event: string, handler: (payload: { messages: unknown[] }) => { messages: unknown[] } | undefined): void }, childConfig());
 
@@ -1215,7 +1235,7 @@ describe("subagent prompt runtime", () => {
 		let contextHandler: ((event: { messages: unknown[] }, ctx: { model: typeof model }) => { messages: unknown[] } | undefined) | undefined;
 		registerSubagentPromptRuntime({
 			on(event: string, handler: typeof contextHandler) {
-				if (event === "context") contextHandler = handler;
+				if (event === "context_with_system") contextHandler = handler;
 			},
 		} as never, childConfig());
 
@@ -1302,7 +1322,7 @@ describe("subagent prompt runtime", () => {
 		let contextHandler: ((event: { messages: unknown[] }, ctx: { model?: { api: string } }) => { messages: unknown[] } | undefined) | undefined;
 		registerSubagentPromptRuntime({
 			on(event: string, handler: (payload: { messages: unknown[] }, ctx: { model?: { api: string } }) => { messages: unknown[] } | undefined) {
-				if (event === "context") contextHandler = handler;
+				if (event === "context_with_system") contextHandler = handler;
 			},
 		} as { on(event: string, handler: (payload: { messages: unknown[] }, ctx: { model?: { api: string } }) => { messages: unknown[] } | undefined): void }, childConfig());
 
@@ -1320,7 +1340,7 @@ describe("subagent prompt runtime", () => {
 		let contextHandler: ((event: { messages: unknown[] }, ctx: { model?: { api: string } }) => { messages: unknown[] } | undefined) | undefined;
 		registerSubagentPromptRuntime({
 			on(event: string, handler: (payload: { messages: unknown[] }, ctx: { model?: { api: string } }) => { messages: unknown[] } | undefined) {
-				if (event === "context") contextHandler = handler;
+				if (event === "context_with_system") contextHandler = handler;
 			},
 		} as { on(event: string, handler: (payload: { messages: unknown[] }, ctx: { model?: { api: string } }) => { messages: unknown[] } | undefined): void }, childConfig());
 
@@ -1340,7 +1360,7 @@ describe("subagent prompt runtime", () => {
 		let contextHandler: ((event: { messages: unknown[] }, ctx: { model?: { api: string } }) => { messages: unknown[] } | undefined) | undefined;
 		registerSubagentPromptRuntime({
 			on(event: string, handler: (payload: { messages: unknown[] }, ctx: { model?: { api: string } }) => { messages: unknown[] } | undefined) {
-				if (event === "context") contextHandler = handler;
+				if (event === "context_with_system") contextHandler = handler;
 			},
 		} as { on(event: string, handler: (payload: { messages: unknown[] }, ctx: { model?: { api: string } }) => { messages: unknown[] } | undefined): void }, childConfig());
 

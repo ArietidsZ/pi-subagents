@@ -724,26 +724,23 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 	if (config.forkCacheKey) onRuntimeEvent("before_provider_headers", (event: unknown, ctx?: ExtensionContext) => {
 		applyForkSessionAffinity((event as { headers?: Record<string, string | null | undefined> } | undefined)?.headers, ctx?.model, config.parentSessionId, readInherited(ctx)?.model);
 	});
-	if (config.forkCacheKey) onRuntimeEvent("context_with_system", (event: unknown, ctx?: ExtensionContext) => {
-		if (!event || typeof event !== "object" || !("messages" in event) || !Array.isArray(event.messages)) return undefined;
-		const fork = readInherited(ctx);
-		if (!fork) return undefined;
-		const messages = projectForkRequest(event.messages as Array<{ role: string }>, fork.system, fork.forkedAt, { boundary });
-		return messages === event.messages ? undefined : { messages };
-	});
-
-	onRuntimeEvent("context", (event: unknown, ctx?: ExtensionContext) => {
+	// The strip runs on context_with_system, not context: Pi treats any change a context handler
+	// makes to the message list as a rewritten conversation and folds every mid-conversation system
+	// message into the leading one, so every later request would miss the prompt cache. The strip
+	// passes system messages through unchanged, and a fork's projection reads the stripped list.
+	onRuntimeEvent("context_with_system", (event: unknown, ctx?: ExtensionContext) => {
 		if (!event || typeof event !== "object" || !("messages" in event) || !Array.isArray(event.messages)) return undefined;
 		const forkedAt = config.forkCacheKey ? Date.parse(ctx?.sessionManager?.getHeader()?.timestamp ?? "") : Number.NaN;
-		const messages = stripParentOnlySubagentMessages(event.messages, {
+		const stripped = stripParentOnlySubagentMessages(event.messages, {
 			sanitizeToolIds: !COMPOSITE_TOOL_ID_APIS.has(ctx?.model?.api ?? ""),
 			// Providers that reuse the Codex Responses wire under their own api id (e.g. cliproxyapi-codex-responses) split call_id|item_id the same way.
 			preserveBoundedCompositeToolIds: ctx?.model?.api?.endsWith("-codex-responses") === true,
 			preserveFanoutToolHistory: config.fanoutChild,
 			...(Number.isFinite(forkedAt) ? { inheritedBefore: forkedAt } : {}),
 		});
-		if (messages === event.messages) return undefined;
-		return { messages };
+		const fork = config.forkCacheKey ? readInherited(ctx) : undefined;
+		const messages = fork ? projectForkRequest(stripped as Array<{ role: string }>, fork.system, fork.forkedAt, { boundary }) : stripped;
+		return messages === event.messages ? undefined : { messages };
 	});
 
 	// pi-intercom asks at session start for this session's intercom ID. Claiming
