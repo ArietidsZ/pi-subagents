@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { SUBAGENT_FEATURES, resolveDisabledFeatureSurface, validateDisabledFeatures, type SubagentFeature } from "../../src/shared/disabled-features.ts";
 import { SUBAGENT_OPTION_KEYS, SubagentParams, createSubagentParamsSchema } from "../../src/extension/schemas.ts";
 import { SUBAGENT_RPC_PROTOCOL_VERSION, SUBAGENT_RPC_REQUEST_EVENT, registerSubagentRpcBridge, subagentRpcReplyEvent } from "../../src/extension/rpc.ts";
-import { readSubagentGuide } from "../../src/extension/subagent-guide.ts";
+import { readSubagentGuide, SUBAGENT_GUIDE_TOPICS } from "../../src/extension/subagent-guide.ts";
 import { buildSubagentToolDescription, SUBAGENT_SAFETY_GUIDANCE } from "../../src/extension/tool-description.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { createChildSafeState } from "../../src/extension/fanout-child.ts";
@@ -200,18 +200,34 @@ describe("disabled feature discovery", () => {
 		assert.match(disabled.slice(0, -guide.length), /^Disabled by config[^\n]*\n- disabledFeatures "watchdog": options scope, target, thinking; actions watchdog\.status, watchdog\.check, watchdog\.configure, watchdog\.recommend-model\n\n$/);
 	});
 
-	it("keeps every tool-reference section within the 8,000-char guide cap when every feature is disabled", async () => {
+	it("tells every guide topic that workflow scripts are disabled and what replaces them", async () => {
+		const request = { action: "guide", topic: "workflows/scripted-workflows" };
+		const guide = readSubagentGuide("workflows/scripted-workflows");
+		const enabled = await createExecutor({}).executePublic("guide", request, new AbortController().signal, undefined, ctx());
+		assert.equal(resultText(enabled), guide);
+		const executor = createExecutor({ disabledFeatures: ["workflow-scripts"] });
+		const section = resultText(await executor.executePublic("guide", request, new AbortController().signal, undefined, ctx()));
+		assert.ok(section.endsWith(guide));
+		assert.match(section, /^Some options and actions documented here are disabled by config[^\n]*Instead of workflow scripts, use the top-level tasks or chain fields\.\n\n/);
+		const topic = resultText(await executor.executePublic("guide", { action: "guide", topic: "workflows" }, new AbortController().signal, undefined, ctx()));
+		assert.match(topic, /^Disabled by config[^\n]*\n- disabledFeatures "workflow-scripts": options workflow, [^\n]*\. Instead of workflow scripts, use the top-level tasks or chain fields\.\n\n/);
+	});
+
+	it("keeps every guide section within the 8,000-char guide cap when every feature is disabled", async () => {
 		const executor = createExecutor({ disabledFeatures: Object.keys(SUBAGENT_FEATURES) as SubagentFeature[], scheduledRuns: { enabled: false } });
 		const read = async (topic: string) => resultText(await executor.executePublic("guide", { action: "guide", topic }, new AbortController().signal, undefined, ctx()));
-		const toc = await read("tool-reference");
-		assert.match(toc, /^Disabled by config/);
-		const sections = [...toc.matchAll(/^\s*(tool-reference\/\S+) — /gm)].map((match) => match[1]!);
-		assert.ok(sections.length > 10);
-		for (const section of sections) {
-			const text = await read(section);
-			assert.match(text, /^Some options and actions documented here are disabled by config/, section);
-			assert.ok(text.length <= 8_000, `${section}: ${text.length}`);
+		let checked = 0;
+		for (const topic of SUBAGENT_GUIDE_TOPICS) {
+			const toc = await read(topic);
+			assert.match(toc, /^Disabled by config/, topic);
+			for (const [, section] of toc.matchAll(/^\s*([a-z-]+\/\S+) — /gm)) {
+				const text = await read(section!);
+				assert.match(text, /^Some options and actions documented here are disabled by config/, section);
+				assert.ok(text.length <= 8_000, `${section}: ${text.length}`);
+				checked++;
+			}
 		}
+		assert.ok(checked > 100);
 	});
 
 	it("advertises only enabled RPC management actions", async () => {

@@ -111,13 +111,22 @@ export function disabledFeatureUseError(request: object, surface: DisabledFeatur
 	return undefined;
 }
 
-/** Lists what config disabled, for prepending to static reference docs that describe the full tool. */
+const WORKFLOW_SCRIPTS_REPLACEMENT = "Instead of workflow scripts, use the top-level tasks or chain fields.";
+
+/** Lists what config disabled, for prepending to static guide docs that describe the full tool. */
 export function disabledFeatureNotice(surface: DisabledFeatureSurface): string | undefined {
 	if (surface.features.size === 0) return undefined;
 	const lines = [...surface.features].map((feature) => {
 		const { actions, params, disabledBy } = featureSurface(feature);
 		const parts = [`options ${params.join(", ")}`, ...(actions.length > 0 ? [`actions ${actions.join(", ")}`] : [])];
-		return `- ${disabledBy}: ${parts.join("; ")}`;
+		return `- ${disabledBy}: ${parts.join("; ")}${feature === "workflow-scripts" ? `. ${WORKFLOW_SCRIPTS_REPLACEMENT}` : ""}`;
 	});
-	return `Disabled by config in this session. The reference below still lists these, but calls that use them are rejected:\n${lines.join("\n")}`;
+	return `Disabled by config in this session. The guide below may still describe these, but calls that use them are rejected:\n${lines.join("\n")}`;
+}
+
+/** One-line form for guide sections, which are capped at 8,000 chars. */
+export function disabledFeatureSectionNotice(surface: DisabledFeatureSurface): string | undefined {
+	if (surface.features.size === 0) return undefined;
+	const replacement = surface.features.has("workflow-scripts") ? ` ${WORKFLOW_SCRIPTS_REPLACEMENT}` : "";
+	return `Some options and actions documented here are disabled by config in this session; guide topic tool-reference lists them.${replacement}`;
 }
