@@ -118,6 +118,21 @@ describe("builtin agent overrides", () => {
 		assert.throws(() => discoverAgentsAll(tempProject), /Builtin override 'worker'.*sets 'launcher'/u);
 	});
 
+	it("rejects a misspelled override field with the nearest known one, in user and provider overrides", () => {
+		const userSettings = path.join(tempHome, ".pi", "agent", "settings.json");
+		writeJson(userSettings, { subagents: { agentOverrides: { worker: { modle: "x/y" } } } });
+		assert.throws(() => discoverAgentsAll(tempProject), /Builtin override 'worker' in '.*settings\.json' has unknown field 'modle'\. Did you mean 'model'\?/u);
+		writeJson(userSettings, { subagents: { agentOverridesByProvider: { openai: { worker: { toolz: ["read"] } } } } });
+		assert.throws(() => discoverAgentsAll(tempProject), /'agentOverridesByProvider\.openai\.worker'.*unknown field 'toolz'\. Did you mean 'tools'\?/u);
+	});
+
+	it("accepts only known thinking levels or false in overrides", () => {
+		writeJson(path.join(tempProject, ".pi", "settings.json"), { subagents: { agentOverrides: { worker: { thinking: "hgih" } } } });
+		assert.throws(() => discoverAgentsAll(tempProject), /Builtin override 'worker'.*invalid 'thinking'; expected one of off, minimal, low, medium, high, xhigh, max, or false\./u);
+		writeJson(path.join(tempProject, ".pi", "settings.json"), { subagents: { agentOverrides: { worker: { thinking: "high" } } } });
+		assert.equal(discoverAgents(tempProject, "both").agents.find((agent) => agent.name === "worker")?.thinking, "high");
+	});
+
 	it("replaces and clears custom-agent allowedAgents while preserving explicit deny-all", () => {
 		writeProjectAgent(tempProject, "coordinator", "---\nname: coordinator\ndescription: Coordinator\nallowedAgents: scout\n---\n\nCoordinate.\n");
 		writeJson(path.join(tempHome, ".pi", "agent", "settings.json"), {
