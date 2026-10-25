@@ -162,7 +162,16 @@ function inheritedCapabilityCeiling(inherited: InheritedChildRuntime | undefined
 	return inherited?.capabilityCeiling;
 }
 
-/** Environment values external child extensions read; only the runner applies them. */
+/**
+ * The only value an in-process foreground child gets: its extension bindings, set while its
+ * extensions load and start and then restored, so the parent keeps its own environment and a
+ * child never sees the bindings of the session that launched it.
+ */
+function foregroundProcessEnv(input: BuildInProcessChildLaunchInput): Record<string, string | undefined> {
+	return { [PI_SUBAGENT_EXTENSION_BINDINGS_ENV]: encodeExtensionBindings(input.extensionBindings) };
+}
+
+/** Environment values external child extensions read in the runner, which hosts only children. */
 function childProcessEnv(input: BuildInProcessChildLaunchInput, toolPlan: PiLaunchToolPlan): Record<string, string | undefined> {
 	const env: Record<string, string | undefined> = {};
 	env[PI_SUBAGENT_EXTENSION_BINDINGS_ENV] = encodeExtensionBindings(input.extensionBindings);
@@ -339,7 +348,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		requiredExtensions: toolPlan.requiredExtensions,
 		ambientExtensions,
 		hooks: capturedHooks.hooks,
-		...(input.host === "runner" ? { processEnv: childProcessEnv(input, toolPlan) } : {}),
+		...(input.host === "runner" ? { processEnv: childProcessEnv(input, toolPlan) } : { processEnv: foregroundProcessEnv(input), restoreProcessEnv: true }),
 		runtime: config,
 		noSkills: !input.inheritSkills,
 		noContextFiles: !input.inheritProjectContext,

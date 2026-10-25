@@ -96,6 +96,12 @@ export interface ChildSessionLaunch {
 	 * window one at a time. An undefined value removes the variable.
 	 */
 	processEnv?: Record<string, string | undefined>;
+	/**
+	 * Restore the hosting process's previous values of `processEnv` once that
+	 * window ends, so a child hosted in the parent's own process leaves the
+	 * parent's environment as it found it.
+	 */
+	restoreProcessEnv?: boolean;
 	/** The typed runtime config the hooks were built from; informational for factories. */
 	runtime: ChildRuntimeConfig;
 	onExtensionError?: (error: ChildSessionExtensionError) => void;
@@ -267,12 +273,20 @@ function resetExtensionCacheOnReload(loader: object): boolean {
 	return true;
 }
 
-function applyProcessEnv(values: Record<string, string | undefined> | undefined): void {
-	if (!values) return;
+/** Applies `values` to `process.env` and returns a function that puts back the values they replaced. */
+function applyProcessEnv(values: Record<string, string | undefined> | undefined): () => void {
+	if (!values) return () => {};
+	const previous = Object.keys(values).map((name) => [name, process.env[name]] as const);
 	for (const [name, value] of Object.entries(values)) {
 		if (value === undefined) delete process.env[name];
 		else process.env[name] = value;
 	}
+	return () => {
+		for (const [name, value] of previous) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	};
 }
 
 /**
@@ -566,8 +580,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				}
 			};
 			let inheritedProviders = new Set<string>();
-			const open = async () => {
-				applyProcessEnv(launch.processEnv);
+			const openSession = async () => {
 				if (!resetExtensionCacheOnReload(loader) && (launch.ambientExtensions || launch.extensionPaths.length)) launch.onExtensionError?.({ extensionPath: "<loader>", event: "load", error: new Error("pi's extension cache reset is unavailable; extensions loaded into this child share module state with other sessions in this process.") });
 				await loader.reload();
 				if (requiredPaths.size > 0) for (const extension of loader.getExtensions().extensions) resolvedExtensionPaths.set(extension.path, extension.resolvedPath);
@@ -643,6 +656,14 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					throw new Error(`Required child extension failed during startup: ${requiredStartupErrors.join("; ")}`);
 				}
 				return session;
+			};
+			const open = async () => {
+				const restoreEnv = applyProcessEnv(launch.processEnv);
+				try {
+					return await openSession();
+				} finally {
+					if (launch.restoreProcessEnv) restoreEnv();
+				}
 			};
 			const opened = loading.catch(() => {}).then(open);
 			loading = opened;

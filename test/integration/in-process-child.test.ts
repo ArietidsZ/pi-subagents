@@ -409,6 +409,30 @@ describe("default child session factory", () => {
 		assert.deepEqual(bound, ["a", "b"]);
 	});
 
+	it("restores the host's environment after a child that asks for it starts, and after it fails", async () => {
+		const seen: Array<string | undefined> = [];
+		const bound: Array<string | undefined> = [];
+		const bindExtensions = async () => { bound.push(process.env.PI_SUBAGENT_TEST_ENV); };
+		process.env.PI_SUBAGENT_TEST_ENV = "parent";
+		try {
+			const factory = createDefaultChildSessionFactory({ loadPiCodingAgent: async () => stubPi({ bindExtensions }, () => { seen.push(process.env.PI_SUBAGENT_TEST_ENV); }) });
+			await factory.create({ ...stubLaunch, processEnv: { PI_SUBAGENT_TEST_ENV: "child" }, restoreProcessEnv: true });
+			assert.equal(process.env.PI_SUBAGENT_TEST_ENV, "parent");
+			await factory.create({ ...stubLaunch, processEnv: { PI_SUBAGENT_TEST_ENV: undefined }, restoreProcessEnv: true });
+			assert.equal(process.env.PI_SUBAGENT_TEST_ENV, "parent");
+			assert.deepEqual(seen, ["child", undefined]);
+			assert.deepEqual(bound, ["child", undefined]);
+
+			delete process.env.PI_SUBAGENT_TEST_ENV;
+			const failing = stubPi({}, () => { throw new Error("load failed"); });
+			const failingFactory = createDefaultChildSessionFactory({ loadPiCodingAgent: async () => failing });
+			await assert.rejects(failingFactory.create({ ...stubLaunch, processEnv: { PI_SUBAGENT_TEST_ENV: "child" }, restoreProcessEnv: true }), /load failed/);
+			assert.equal(Object.hasOwn(process.env, "PI_SUBAGENT_TEST_ENV"), false);
+		} finally {
+			delete process.env.PI_SUBAGENT_TEST_ENV;
+		}
+	});
+
 	it("marks each child's loader as reloaded so pi resets its extension cache", async () => {
 		const flags: boolean[] = [];
 		const pi = stubPi();
