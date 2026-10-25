@@ -4,7 +4,7 @@
 
 ### Changed
 
-- The bundled `pi-subagents` skill is about a quarter of its old size per use (about 2.9k instead of 10.6k tokens on a typical load). It keeps the common calls, the workflow and resume shapes, and the delegation rules, and points to exact `guide` sections for everything else instead of copying the reference docs. `/council` no longer loads an 11k-token execution reference.
+- The bundled `pi-subagents` skill is about a quarter of its old size per use (about 3k instead of 10.6k tokens on a typical load). It keeps the common calls, the workflow and resume shapes, and the delegation rules, and points to exact `guide` sections for everything else instead of copying the reference docs. In a 117-run comparison, agents using it blocked on a child (`async: false`) 2 times instead of 10. `/council` no longer loads an 11k-token execution reference.
 
 ### Fixed
 
