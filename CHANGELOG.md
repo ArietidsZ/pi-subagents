@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- After the first subagent notice in a conversation, the first request of every new turn missed the prompt cache on models that take system messages mid-conversation, so most of the context was sent uncached again each turn. Marking pi-subagents notices for the model made Pi fold every mid-conversation system message into the leading prompt; the notices are now marked without moving Pi's system messages (#3058). Thanks to [@adameq](https://github.com/adameq) for the report.
 - When text written after a tool call reaches Pi only as a summary, as happens through the Claude Agent SDK used by pi-claude-bridge, a lost ```` ```js workflow ```` block no longer means writing the script to a file first. The error now says to resend the source as `options: { script: "..." }`, which runs it directly. The tool's schema and description are unchanged, so other providers see no difference.
 
 ## [0.82.1] - 2026-10-24
