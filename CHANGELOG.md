@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A recent background run whose `status.json` no longer parses (for example a file filled with NUL bytes) no longer stops `/subagents-fleet` and status listings from showing your other runs. The run is skipped with one warning, which repeats only if the file changes; its files are left as they are, and asking for that run by id still reports the parse error. Thanks to [@ozand](https://github.com/ozand) for #3040 and #3041.
+
 ## [0.82.0] - 2026-10-24
 
 ### Highlights

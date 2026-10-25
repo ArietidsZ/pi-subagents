@@ -170,6 +170,8 @@ interface AsyncRunListOptions {
 	repairScan?: boolean;
 	/** This process's completion owner, adopted by an owner-exited workflow repair of a run the session owns; needs `sessionId`. */
 	adoptCompletionOwnerId?: string;
+	/** Receives the warning for a skipped corrupt terminal status, so an open TUI can show it as a notice instead of console output. */
+	onCorruptStatus?: (warning: string) => void;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -541,7 +543,7 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 			}
 			if (wantsTerminal) {
 				for (const sessionId of owners ?? [undefined]) {
-					for (const entry of readRecentTerminalRunIndex(asyncDirRoot, { sessionId, ...(options.entryLimit !== undefined ? { limit: options.entryLimit } : {}) })) indexed.add(entry);
+					for (const entry of readRecentTerminalRunIndex(asyncDirRoot, { sessionId, onCorruptStatus: options.onCorruptStatus, ...(options.entryLimit !== undefined ? { limit: options.entryLimit } : {}) })) indexed.add(entry);
 				}
 			}
 			entries = [...indexed];

@@ -284,6 +284,7 @@ export function collectFleetSnapshot(
 				entryLimit: MAX_FLEET_HISTORY_CANDIDATES,
 				resultsDir: options.resultsDir ?? DIRS.results,
 				reconcile: false,
+				onCorruptStatus: (warning) => reportFleetWarning(state, warning),
 			}).filter((run) => !trackedIds.has(run.id));
 			runs = [...trackedRuns, ...history];
 		} else {
