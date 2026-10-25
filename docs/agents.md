@@ -650,11 +650,10 @@ The package bundles a `pi-subagents` skill that is automatically available to th
 
 What it covers:
 
-- **Delegation patterns**: how to select a bounded agent and single, parallel, scripted, or async shape after delegation is authorized, including fresh or forked context.
-- **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command. This includes parallel review, review-loop, parallel research, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup.
-- **Role-agent prompting guidance**: compact contract prompts instead of long scripts, what to include in role-specific meta prompts, and retrieval budgets for researchers.
-- **Safety boundaries**: child agents must not run subagents unless their resolved builtin tools explicitly include `subagent`, must not invent intercom targets, and must escalate unapproved decisions.
-- **Intercom conventions**: when to ask vs send, and how parent-side supervisor/result delivery works through the native channel.
-- **Control and diagnostics**: attention signals, soft interrupts, status, and the `doctor` action.
+- **Calls**: the common `subagent` calls, workflow script and resume shapes, and async waiting rules.
+- **Delegation rules**: when to delegate at all, what every child brief contains, one writer per worktree, fresh or forked context, and what to do when a lane fails.
+- **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command: parallel review, review loop, parallel research, gather-context-and-clarify, parallel cleanup, and oracle consultation.
+- **Orchestration**: splitting work into lanes, review loops, finding disposition, and gate-failure triage.
+- **Lookups**: which `guide` section answers each rarer question, so the skill does not copy this reference.
 
 If you are writing an agent that has been asked to orchestrate subagents, the bundled skill helps it behave correctly without guessing the patterns. If you are a human user, you do not need to read it; the README and prompt shortcuts encode the same workflows in user-facing form.
