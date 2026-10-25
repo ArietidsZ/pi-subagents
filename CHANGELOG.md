@@ -5,6 +5,7 @@
 ### Changed
 
 - The bundled `pi-subagents` skill is about a quarter of its old size per use (about 3k instead of 10.6k tokens on a typical load). It keeps the common calls, the workflow and resume shapes, and the delegation rules, and points to exact `guide` sections for everything else instead of copying the reference docs. In a 117-run comparison, agents using it blocked on a child (`async: false`) 2 times instead of 10. `/council` no longer loads an 11k-token execution reference.
+- When `subagent({ workflow: true })` can't find the script block, the error now explains that on some models text written after a tool call reaches the session as a summary without code blocks, and tells the agent to use a script file for the rest of the turn instead of retrying the block. The bundled skill tells parents on Claude 5.x models (Opus 5.5, Sonnet 5.5, Fable 5.1) to use a script file once the turn has made a tool call.
 
 ### Fixed
 
