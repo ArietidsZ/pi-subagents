@@ -2,14 +2,22 @@
 
 ## [Unreleased]
 
+## [0.82.1] - 2026-10-24
+
+### Highlights
+
+- A run with a damaged status file no longer hides your other runs from `/subagents-fleet` and status listings.
+- The bundled skill costs about 3k tokens per use instead of 10.6k, and agents following it block on a child less often.
+- On Opus 5.5, Sonnet 5.5 and Fable 5.1, a workflow launch that loses its script recovers on the next try instead of failing again.
+
 ### Changed
 
-- The bundled `pi-subagents` skill is about a quarter of its old size per use (about 3k instead of 10.6k tokens on a typical load). It keeps the common calls, the workflow and resume shapes, and the delegation rules, and points to exact `guide` sections for everything else instead of copying the reference docs. In a 117-run comparison, agents using it blocked on a child (`async: false`) 2 times instead of 10. `/council` no longer loads an 11k-token execution reference.
-- When `subagent({ workflow: true })` can't find the script block, the error now explains that on some models text written after a tool call reaches the session as a summary without code blocks, and tells the agent to use a script file for the rest of the turn instead of retrying the block. The bundled skill tells parents on Claude 5.x models (Opus 5.5, Sonnet 5.5, Fable 5.1) to use a script file once the turn has made a tool call.
+- The bundled `pi-subagents` skill is about a quarter of its old size: about 3k tokens per use instead of 10.6k. It keeps the common calls, the workflow and resume examples, and the rules for when and how to delegate, and points to the `guide` sections for everything else instead of copying the reference docs. In testing, agents using it blocked on a child with `async: false` 2 times in 39 tasks instead of 10. `/council` no longer loads an extra 11k-token reference.
+- On Claude 5.x models (Opus 5.5, Sonnet 5.5, Fable 5.1), text written after a tool call reaches Pi only as a short summary without code blocks, so a ```` ```js workflow ```` block written at that point is lost and `subagent({ workflow: true })` can't find it. The error now explains this and tells the agent to pass the script as a file for the rest of the turn, and the bundled skill tells these models to use a file from the start once the turn has made a tool call.
 
 ### Fixed
 
-- A recent background run whose `status.json` no longer parses (for example a file filled with NUL bytes) no longer stops `/subagents-fleet` and status listings from showing your other runs. The run is skipped with one warning, which repeats only if the file changes; its files are left as they are, and asking for that run by id still reports the parse error. Thanks to [@ozand](https://github.com/ozand) for #3040 and #3041.
+- A recent background run whose `status.json` no longer parses, for example a file filled with NUL bytes, no longer stops `/subagents-fleet` and status listings from showing your other runs. The run is skipped with one warning, shown as a notice while `/subagents-fleet` is open, which repeats only if the file changes. Its files are left as they are, and asking for that run by id still reports the parse error. Thanks to [@ozand](https://github.com/ozand) for #3040 and #3041.
 
 ## [0.82.0] - 2026-10-24
 
