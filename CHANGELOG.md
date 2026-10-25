@@ -5,6 +5,7 @@
 ### Fixed
 
 - When text written after a tool call reaches Pi only as a summary, as happens through the Claude Agent SDK used by pi-claude-bridge, a lost ```` ```js workflow ```` block no longer means writing the script to a file first. The error now says to resend the source as `options: { script: "..." }`, which runs it directly. The tool's schema and description are unchanged, so other providers see no difference.
+- A misspelled field in a `subagents.agentOverrides` or `agentOverridesByProvider` entry, such as `modle`, used to be ignored without a word; loading now fails with the settings file, the field, and the nearest known name (`Did you mean 'model'?`). An override's `thinking` must now be a known level (`off` through `max`) or `false`; a typo such as `hgih` used to be appended to the child's model id. (#3050) Thanks to [@isjiajia01](https://github.com/isjiajia01) for the report.
 
 ## [0.82.1] - 2026-10-24
 
