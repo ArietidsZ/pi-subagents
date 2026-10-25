@@ -13,6 +13,7 @@ import { discoverPlacedBridgeManifest, type PlacedBridgeManifest, type PlacedRun
 import type { PlacementBridgeIdentity, PlacementPaneHost, PlacementReconnectCheck, PlacementRunState, PlacementSockets } from "./placement-host.ts";
 import { RexPlacedRunOwner } from "./rex-pane-host.ts";
 import { isRexLocalMachine } from "./rex-machine.ts";
+import { PLACED_RESTORE_UNSUPPORTED } from "./herdr-machine.ts";
 
 export interface HerdrRunIdentity { runId: string; machineId: string; target: string; session: string | null; workspaceId: string; tabId: string; paneId: string; terminalId: string; agentName: string; nativeSessionId: string; cwd: string; runtimeDir: string }
 export interface HerdrRunSnapshot { connection: "connected" | "unknown" | "closed"; state: PlacementRunState; identity?: HerdrRunIdentity; revision: number }
@@ -35,11 +36,13 @@ export async function boundedHerdrReconnect(identity: HerdrRunIdentity, lastEvid
 function safeRunId(value: string | undefined): string { const prefix = value?.replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 48) ?? "run"; return validateHerdrPiRunId(`${prefix}_${randomBytes(8).toString("hex")}`); }
 
 export function serializeHerdrPiLaunch(launch: ChildSessionLaunch): { args: string[]; resources: { agent: string; skills?: string[]; toolCeiling?: string[]; reads?: string[] | false } } {
-	if (launch.storage.kind === "file") throw new Error("Pane-native remote Pi does not support fork, resume, or revival; use fresh context.");
+	// Every child is handed a local session file path; only one that already exists (a fork or a
+	// resumed transcript) asks the pane to restore history. A fresh child's path is never written.
+	if (launch.storage.kind === "file" && fs.existsSync(launch.storage.sessionFile)) throw new Error(PLACED_RESTORE_UNSUPPORTED);
 	if (launch.extensionPaths.length || launch.requiredExtensions?.length) throw new Error("Pane-native remote Pi cannot transfer local extension paths; install/configure pi-subagents on the remote machine.");
 	if (launch.processEnv && Object.values(launch.processEnv).some((value) => value !== undefined && value !== "__none__")) throw new Error("Pane-native remote Pi cannot transfer local bindings, MCP selections, or process environment.");
 	if (launch.runtime.nestedRoute || launch.runtime.fanoutChild || launch.runtime.depth > 1) throw new Error("Nested delegation from a pane-native remote Pi is not supported.");
-	if (launch.excludeTools?.length || launch.runtime.permissions || launch.runtime.toolBudget || launch.runtime.requiredExtensions || launch.runtime.requiredTools?.length || launch.runtime.mcpDirectTools?.length) throw new Error("Pane-native remote Pi cannot yet represent exclusions, permission rules, tool budgets, MCP direct tools, or required-tool/extension contracts; remove machine placement.");
+	if (launch.excludeTools?.length || launch.runtime.permissions || launch.runtime.toolBudget || launch.runtime.requiredExtensions || launch.runtime.mcpDirectTools?.length) throw new Error("Pane-native remote Pi cannot yet represent exclusions, permission rules, tool budgets, MCP direct tools, or required-extension contracts; remove machine placement.");
 	const resources = launch.remoteResources;
 	if (!resources || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(resources.agent) || resources.skills?.some((name) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(name)) || resources.toolCeiling?.some((name) => !/^[A-Za-z0-9_-]{1,64}$/u.test(name)) || (resources.reads !== undefined && resources.reads !== false && resources.reads.some((read) => typeof read !== "string" || Buffer.byteLength(read) > 4096))) throw new Error("Pane-native remote resources require bounded logical agent, skill, tool, and read names.");
 	const args: string[] = [];
@@ -148,6 +151,9 @@ async function startPlacedPiSession<C extends PlacementSockets>(launch: ChildSes
 		const configured = await Promise.race([bridge.configure(policy.resources), bridge.failure]);
 		if (configured.nativeSessionId !== manifest.nativeSessionId || configured.agent !== policy.resources.agent) throw new Error("Remote Pi resource resolution identity mismatch.");
 		if (!Array.isArray(configured.tools) || (policy.resources.toolCeiling && configured.tools.some((tool) => !policy.resources.toolCeiling!.includes(String(tool))))) throw new Error("Remote Pi active-tool ceiling acknowledgement mismatch.");
+		// The remote Pi never receives the runtime contract, so required tools are checked here, against what it activated.
+		const missingRequired = (launch.runtime.requiredTools ?? []).filter((tool) => !(configured.tools as unknown[]).includes(tool));
+		if (missingRequired.length) throw new Error(`Remote Pi agent '${policy.resources.agent}' did not activate required tools: ${missingRequired.join(", ")}.`);
 		if (launch.model && configured.model !== launch.model.split(":")[0]) throw new Error(`Remote Pi model '${launch.model}' did not resolve to the requested provider/model.`);
 		const identity: HerdrRunIdentity = { runId, machineId: machine.id, target: isRexLocalMachine(machine) ? machine.id : machine.target, session: owner.host.sessionOf(connection), workspaceId: owned.workspaceId, tabId: owned.tabId, paneId: owned.paneId, terminalId, agentName, nativeSessionId: manifest.nativeSessionId, cwd: machine.cwd, runtimeDir };
 		owner.journal(identity);
