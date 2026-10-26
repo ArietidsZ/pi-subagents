@@ -669,6 +669,8 @@ async function runSingleAttempt(
 		let agentSettledReceived = false;
 		let queuedDrainHold = false;
 		let compactionStartedReceived = false;
+		let terminalAgentEndReceived = false;
+		let compactionAfterFinalOpen = false;
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardFinishTimer: NodeJS.Timeout | undefined;
 		let watchdogTailTimer: NodeJS.Timeout | undefined;
@@ -711,7 +713,8 @@ async function runSingleAttempt(
 			if (sessionSettled || finalDrainTimer || lifecycleFinished) return;
 			finalDrainTimer = setTimeout(() => {
 				if (lifecycleFinished || sessionSettled) return;
-				if (capture.finalDrainHeld() || observeQueuedDrainHold()) {
+				// Pi runs auto-compaction after the final agent_end and only then emits agent_settled.
+				if (capture.finalDrainHeld() || observeQueuedDrainHold() || compactionAfterFinalOpen) {
 					finalDrainTimer = undefined;
 					armFinalDrainTimer();
 					return;
@@ -725,9 +728,7 @@ async function runSingleAttempt(
 					if (lifecycleFinished || sessionSettled) return;
 					settle(undefined, true);
 				}, HARD_FINISH_MS);
-				finalHardFinishTimer.unref?.();
 			}, FINAL_STOP_GRACE_MS);
-			finalDrainTimer.unref?.();
 		};
 		function armWatchdogTail(): void {
 			if ((!cleanTerminalAssistantStopReceived && !agentSettledReceived) || watchdogTailTimer || lifecycleFinished || sessionSettled) return;
@@ -745,12 +746,20 @@ async function runSingleAttempt(
 			}, childWatchdog?.watchdogTailTimeoutMs ?? 120_000);
 			watchdogTailTimer.unref?.();
 		}
-		const applyChildLifecycle = (action: ChildLifecycleAction): void => {
+		const applyChildLifecycle = (action: ChildLifecycleAction, event?: { type?: string; willRetry?: unknown }): void => {
 			if (action === "cancel-drain") {
-				cleanTerminalAssistantStopReceived = false;
+				// After a clean final stop, a non-retrying agent_end may be the child's last event
+				// (Pi may not emit agent_settled), so it re-arms the drain instead of cancelling it.
+				terminalAgentEndReceived = event?.type === "agent_end" && event.willRetry !== true && cleanTerminalAssistantStopReceived;
 				agentSettledReceived = false;
 				clearFinalDrainTimers();
 				clearWatchdogTailTimer();
+				if (terminalAgentEndReceived) {
+					startFinalDrain();
+					return;
+				}
+				cleanTerminalAssistantStopReceived = false;
+				compactionAfterFinalOpen = false;
 				return;
 			}
 			if (action === "start-drain") startFinalDrain();
@@ -1009,10 +1018,16 @@ async function runSingleAttempt(
 			if (evt.type === "compaction_start") {
 				compactionStartedReceived = true;
 				if (agentSettledReceived) afterCompactionSettlement = true;
+				if (terminalAgentEndReceived) compactionAfterFinalOpen = true;
 			}
 			if (evt.type === "compaction_end" && evt.willRetry === true) {
 				compactionStartedReceived = false;
 				afterCompactionSettlement = false;
+			}
+			if (evt.type === "compaction_end" && evt.willRetry !== true && compactionAfterFinalOpen) {
+				compactionAfterFinalOpen = false;
+				clearFinalDrainTimers();
+				startFinalDrain();
 			}
 			if (evt.type === "turn_start" || evt.type === "agent_start" || evt.type === "auto_retry_start") {
 				queuedDrainHold = false;
@@ -1040,7 +1055,7 @@ async function runSingleAttempt(
 				agentSettledReceived = true;
 				afterCompactionSettlement = compactionStartedReceived;
 			}
-			applyChildLifecycle(lifecycleAction);
+			applyChildLifecycle(lifecycleAction, evt);
 
 			if (isChildWatchdogStatusEvent(evt)) {
 				if (!childWatchdog) return;

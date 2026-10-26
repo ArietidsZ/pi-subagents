@@ -3083,6 +3083,24 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		assert.ok(Date.now() - startedAt >= 1200, "foreground runner must not terminate during compaction retry");
 	});
 
+	it("finishes a child whose last event is a terminal agent_end", { timeout: 10_000 }, async () => {
+		mockPi.onCall({ jsonl: [events.assistantMessage("final reply"), { type: "agent_end", willRetry: false }], omitImplicitFinalEvents: true, hangUntilAbort: true });
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Finish", { acceptance: false });
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.error, undefined);
+		assert.equal(getFinalOutput(result.messages), "final reply");
+	});
+
+	it("lets a compaction that runs after the final agent_end finish", { timeout: 10_000 }, async () => {
+		mockPi.onCall({ omitImplicitFinalEvents: true, steps: [
+			{ jsonl: [events.assistantMessage("final reply"), { type: "agent_end", willRetry: false }, { type: "compaction_start" }] },
+			{ delay: 1500, jsonl: [{ type: "compaction_end", willRetry: false }, { type: "agent_settled" }] },
+		] });
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Finish", { acceptance: false });
+		assert.equal(result.exitCode, 0);
+		assert.equal(mockPi.sessions.at(-1)?.aborted, false, "the child is not aborted during its compaction");
+	});
+
 	it("treats agent_settled as a clean terminal watermark", async () => {
 		const nonTerminalMessage = events.assistantMessage("settled without a terminal assistant stop") as { message: { stopReason: string } };
 		nonTerminalMessage.message.stopReason = "length";
