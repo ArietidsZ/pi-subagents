@@ -997,6 +997,21 @@ Advise only.
 		assert.match(readText(chainResult), /Durable chain definitions were removed/);
 	});
 
+	it("rejects an unknown thinking level without writing the agent file", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const filePath = path.join(tempDir, ".pi", "agents", "thinker.md");
+		const created = handleCreate({ config: { name: "thinker", description: "Think", scope: "project", thinking: "hgih" } }, ctx);
+		assert.equal(created.isError, true);
+		assert.match(readText(created), /config\.thinking must be one of off, minimal, low, medium, high, xhigh, max, or false/);
+		assert.equal(fs.existsSync(filePath), false);
+
+		assert.equal(handleCreate({ config: { name: "thinker", description: "Think", scope: "project", thinking: "high" } }, ctx).isError, false);
+		const before = fs.readFileSync(filePath, "utf-8");
+		assert.match(before, /^thinking: high$/m);
+		assert.equal(handleUpdate({ agent: "thinker", config: { thinking: "hgih" } }, ctx).isError, true);
+		assert.equal(fs.readFileSync(filePath, "utf-8"), before);
+	});
+
 	it("creates, updates, reports, clears, and validates acceptance roles", () => {
 		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
 		const created = handleCreate(
