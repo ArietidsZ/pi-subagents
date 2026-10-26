@@ -361,10 +361,7 @@ export function preservedAgentFrontmatterFields(agent: AgentConfig, cfg: Record<
 	if (hasKey(cfg, "extensions")) changed("extensions");
 	if (hasKey(cfg, "subagentOnlyExtensions")) changed("subagentOnlyExtensions");
 	if (hasKey(cfg, "mutationTools")) changed("mutationTools");
-	if (hasKey(cfg, "thinking")) {
-		changed("thinking");
-		if (cfg.thinking === "off") fields.add("thinking");
-	}
+	if (hasKey(cfg, "thinking")) changed("thinking");
 	if (hasKey(cfg, "systemPromptMode")) {
 		changed("systemPromptMode");
 		fields.add("systemPromptMode");
