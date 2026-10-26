@@ -678,6 +678,7 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 	onRuntimeEvent("session_start", (_event: unknown, ctx?: ExtensionContext) => {
 		const sessionManager = (ctx as { sessionManager?: Parameters<typeof resolveCurrentSessionId>[0] } | undefined)?.sessionManager;
 		waitState.currentSessionId = sessionManager ? resolveCurrentSessionId(sessionManager) : null;
+		waitState.supervisorOwnerSessionId = sessionManager?.getSessionId() || null;
 		registerNativeSupervisorClientOnce();
 	});
 	onRuntimeEvent("agent_start", () => {
