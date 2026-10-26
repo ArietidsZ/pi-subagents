@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { registerAgent } from "../../src/api/agents.ts";
 import { clearAgentDiscoveryCache, discoverAgentSnapshot, discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
@@ -30,6 +31,71 @@ function makePi(): ExtensionAPI {
 }
 
 describe("agent discovery snapshots", () => {
+ it("does not probe owned ancestor project markers on cold or warm untrusted discovery", (t) => {
+  const markers = [".pi", ".agents", ".git"].map((name) => path.join(tempRoot, name));
+  for (const marker of markers) fs.mkdirSync(marker, { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  writeAgent(path.join(home, ".pi", "agent", "agents", "owner-probe.md"), "owner-probe", "User probe");
+  const mutableFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const observed: string[] = [];
+  const record = (value: unknown) => {
+   if (typeof value === "string" && markers.includes(path.resolve(value))) observed.push(path.resolve(value));
+  };
+  const stat = mutableFs.statSync;
+  const readdir = mutableFs.readdirSync;
+  try {
+   t.mock.method(mutableFs, "statSync", (...args: Parameters<typeof stat>) => {
+    record(args[0]); return Reflect.apply(stat, mutableFs, args);
+   });
+   t.mock.method(mutableFs, "readdirSync", (...args: Parameters<typeof readdir>) => {
+    record(args[0]); return Reflect.apply(readdir, mutableFs, args);
+   });
+   syncBuiltinESMExports();
+   // Prove namespace bindings observe the instrumentation before testing discovery.
+   fs.statSync(markers[0]); fs.readdirSync(markers[0]);
+   assert.equal(observed.length, 2);
+   observed.length = 0;
+   for (const phase of ["cold", "warm"]) {
+    const snapshot = discoverAgentSnapshot(project, "both", undefined, { includeChains: false, projectTrusted: false });
+    assert.equal(snapshot.effective.agents.some((agent) => agent.name === "owner-probe"), true, phase);
+    assert.deepEqual(observed, [], phase);
+   }
+  } finally {
+   t.mock.restoreAll();
+   syncBuiltinESMExports();
+  }
+ });
+
+ it("retains trusted ancestor invalidation while keeping untrusted sources separate", () => {
+  fs.mkdirSync(project, { recursive: true });
+  writeJson(path.join(tempRoot, ".pi", "settings.json"), { subagents: { projectRootResolution: "nearest" } });
+  const ancestorAgent = path.join(tempRoot, ".pi", "agents", "ancestor-probe.md");
+  writeAgent(ancestorAgent, "ancestor-probe", "Initial ancestor");
+  const read = (trusted: boolean) => discoverAgentSnapshot(project, "both", undefined, { includeChains: false, projectTrusted: trusted });
+  assert.equal(read(false).effective.agents.some((agent) => agent.name === "ancestor-probe"), false);
+  assert.equal(read(true).effective.agents.find((agent) => agent.name === "ancestor-probe")?.description, "Initial ancestor");
+  writeAgent(ancestorAgent, "ancestor-probe", "Changed ancestor description with a different byte length");
+  assert.equal(read(true).effective.agents.find((agent) => agent.name === "ancestor-probe")?.description, "Changed ancestor description with a different byte length");
+  assert.equal(read(false).effective.agents.some((agent) => agent.name === "ancestor-probe"), false);
+  writeAgent(path.join(project, ".pi", "agents", "nearer-probe.md"), "nearer-probe", "New nearer marker");
+  assert.equal(read(true).effective.agents.some((agent) => agent.name === "nearer-probe"), true);
+  assert.equal(read(true).effective.agents.some((agent) => agent.name === "ancestor-probe"), false);
+  assert.equal(read(false).effective.agents.some((agent) => agent.name === "nearer-probe"), false);
+ });
+
+ it("observes policy changes in an existing unselected trusted ancestor candidate", () => {
+  fs.mkdirSync(path.join(tempRoot, ".git"), { recursive: true });
+  writeAgent(path.join(tempRoot, ".pi", "agents", "outer-policy.md"), "outer-policy", "Outer policy");
+  writeAgent(path.join(project, ".pi", "agents", "inner-policy.md"), "inner-policy", "Inner policy");
+  const settings = path.join(tempRoot, ".pi", "settings.json");
+  writeJson(settings, { subagents: { projectRootResolution: "nearest" } });
+  const read = () => discoverAgentSnapshot(project, "both", undefined, { includeChains: false, projectTrusted: true });
+  assert.equal(read().effective.agents.some((agent) => agent.name === "inner-policy"), true);
+  assert.equal(read().effective.agents.some((agent) => agent.name === "outer-policy"), false);
+  writeJson(settings, { subagents: { projectRootResolution: "git-root" } });
+  assert.equal(read().effective.agents.some((agent) => agent.name === "outer-policy"), true);
+  assert.equal(read().effective.agents.some((agent) => agent.name === "inner-policy"), false);
+ });
 	beforeEach(() => {
 		tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-agent-discovery-cache-"));
 		home = path.join(tempRoot, "home");
