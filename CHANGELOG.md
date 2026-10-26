@@ -8,6 +8,10 @@
 - Background subagents that finished their work no longer end as "exited with code 0 before writing a result".
 - Children placed on another machine (a Rex tab, Rex over SSH, or a Herdr pane) launch instead of being refused, and workflows no longer crash on Windows standalone Pi builds.
 
+### Added
+
+- Extensions and editor integrations that show background subagent activity no longer need to poll for changes. A new `subagent:jobs-changed` event tells them to read `status` again whenever a background run starts, moves to its next step, reports progress, or finishes, including chain and parallel step changes that no event reported before. The RPC `ping` reply now lists it, along with the existing `subagent:async-started` event, and [extension-api.md](docs/extension-api.md#refresh-a-host-view-without-polling) shows how to refresh a host view without polling. Thanks to [@raviy06](https://github.com/raviy06) for the proposal. (#3068)
+
 ### Fixed
 
 - A child that had called `subagent`, or whose provider needed tool ids rewritten, missed the prompt cache on every later request when its model takes system messages mid-conversation. Removing parent-only subagent history made Pi fold every mid-conversation system message into the leading prompt; that history is now removed without moving Pi's system messages. (#3063)

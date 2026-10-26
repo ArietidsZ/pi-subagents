@@ -2489,6 +2489,8 @@ export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
 export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 export const SUBAGENT_STEERING_NOTICE_EVENT = "subagent:steering-notice";
 export const SUBAGENT_CHILD_STATUS_EVENT = "subagent:child-status";
+/** Payload is only `{ version: 1 }`: a hint for hosts to read `status` again, not a description of the change. */
+export const SUBAGENT_JOBS_CHANGED_EVENT = "subagent:jobs-changed";
 export const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 export const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 

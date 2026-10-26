@@ -426,6 +426,36 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 		}
 	});
 
+	it("emits subagent:jobs-changed when a background chain moves to its next step", async () => {
+		const asyncRoot = createTempDir("pi-async-jobs-changed-");
+		try {
+			const runDir = path.join(asyncRoot, "run-chain");
+			fs.mkdirSync(runDir, { recursive: true });
+			const writeStatus = (currentStep: number) => fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: "run-chain", mode: "chain", state: "running", sessionId: "session-chain", startedAt: 1000, lastUpdate: 2000 + currentStep, currentStep, chainStepCount: 2,
+				steps: [{ agent: "scout", status: currentStep === 0 ? "running" : "complete" }, { agent: "worker", status: currentStep === 0 ? "pending" : "running" }],
+			}), "utf-8");
+			writeStatus(0);
+			updateActiveRunIndex(runDir, "running");
+			const state = createState();
+			state.currentSessionId = "session-chain";
+			const recorder = createEventRecorder();
+			const changed = () => recorder.events.filter((event) => event.channel === "subagent:jobs-changed");
+			const tracker = createTracker(recorder.pi, state as never, asyncRoot, { pollIntervalMs: 10 });
+			tracker.restoreActiveJobs(createUiContext().ctx as never);
+			assert.ok(changed().length > 0, "restoring a running job is a change");
+
+			const before = changed().length;
+			assert.equal(state.asyncJobs.get("run-chain")?.currentStep, 0);
+			writeStatus(1);
+			await waitForCondition(() => changed().length > before, "jobs-changed after the step moved");
+			assert.equal(state.asyncJobs.get("run-chain")?.currentStep, 1);
+			for (const event of changed()) assert.deepEqual(event.data, { version: 1 });
+		} finally {
+			removeTempDir(asyncRoot);
+		}
+	});
+
 	it("retains nested lookup authority after async coordinator widget cleanup without crossing sessions", async () => {
 		const asyncRoot = createTempDir("pi-async-retained-lookup-");
 		const route = createNestedRoute("async-coordinator");
@@ -584,7 +614,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			}
 
 			await new Promise((resolve) => setTimeout(resolve, 30));
-			assert.equal(recorder.events.length, 0, "historical control events should not be replayed during restore");
+			assert.deepEqual(recorder.events.filter((event) => event.channel !== "subagent:jobs-changed"), [], "historical control events should not be replayed during restore");
 		} finally {
 			removeTempDir(asyncRoot);
 		}

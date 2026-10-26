@@ -129,6 +129,7 @@ Method notes:
 Capability advertisements on `ping`:
 
 - `events.asyncComplete` — exact process-local completion correlation after RPC `spawn`.
+- `events.jobsChanged`, `events.asyncStarted`, `events.childStatus`, `events.processTerminal` — the event names a host can listen to instead of polling `status` (see [Refresh a host view without polling](#refresh-a-host-view-without-polling)).
 - `managementActions` — exact schedule management actions accepted by RPC `manage`.
 - `launchResolvedExtensions` — the optional launch-resolved extension projection in status details.
 - `runtimeAcknowledgedExtensions` — the optional child-runtime acknowledgement projection and event name.
@@ -140,6 +141,20 @@ Capability advertisements on `ping`:
 - `cost: { version: 1 }` — the `cost` method is available and returns the versioned report shape above.
 
 Structured delegation progress updates carry `runId` as soon as foreground execution allocates it, so a caller can retain the package-owned revival target even if its own tool turn is interrupted before the terminal response. Foreground `details.results[]` rows also include a numeric `index` that is unique within the run and stable across partial progress snapshots and the final result; use `(runId, index)` instead of row position to correlate single, counted parallel, and chain children.
+
+### Refresh a host view without polling
+
+A host that shows background subagent activity (an editor panel, a footer, a status bar) can read `status` when something changed instead of on a timer:
+
+1. Read `status` once when the host starts or reconnects. Events are not replayed after a host restart.
+2. Subscribe to the names under `ping.events`: `jobsChanged`, `asyncStarted`, `childStatus`, `asyncComplete`, and `processTerminal`.
+3. When any of them fires, read `status` again. Events can arrive in bursts and can repeat, so coalesce them in the host, for example one `status` read per 250 ms.
+
+`subagent:jobs-changed` carries only `{ version: 1 }`. It fires whenever the parent's background job view changes: a run starts, moves to another step, reports new activity (a tool, a turn, tokens, or output), finishes, or is cleared from the widget. While a child streams output this can be about once per second per run. That includes a chain or parallel run moving from one step to the next, which no other event reports. Starts and finishes fire right away; step and activity changes fire when the parent next reads the run's status file, which on macOS is a check every 5 seconds. It fires only in sessions with a UI, which covers interactive and RPC mode; print mode (`pi -p`) and SDK embeddings without a UI do not get it. It fires even when the async widget is turned off.
+
+Foreground children are not background jobs. Their progress arrives as updates to the parent's `subagent` tool call (Pi's `tool_execution_update` events), with the `details.results[]` rows described above.
+
+To rebuild what ran in a session after a reload, read the records the session file already holds: the `subagent` tool result's `details.results[]` for foreground runs and the `subagent-notify` message's `details.runs[]` for background runs (see [Host session lifetime and completion wakes](#host-session-lifetime-and-completion-wakes)). The `cost` method returns per-child rows built from the same records.
 
 ### Direct async launch correlation
 
