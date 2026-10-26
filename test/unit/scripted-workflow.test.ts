@@ -2478,6 +2478,24 @@ describe("scripted workflow runtime", () => {
 		}
 	});
 
+	it("survives garbage collection of finished workers for portable workflow parity", async () => {
+		const bun = (globalThis as { Bun?: { gc(force: boolean): void } }).Bun;
+		for (let run = 0; run < 3; run++) {
+			const result = await runWorkflowScript({
+				script: `const child = await runs.run("gc", { agent: "worker", task: "run" }); return child.output;`,
+				timeoutMs: 5_000,
+				async launch(key) { return { key, ok: true, output: `done ${key}`, artifactPaths: [] }; },
+				async status(key) { return { key, ok: true, output: "ok", artifactPaths: [] }; },
+			});
+			assert.equal(result.value, "done gc");
+		}
+		// Bun's Worker finalizer revokes the filename whenever an eval option was passed; collecting must not throw.
+		for (let pass = 0; pass < 5; pass++) {
+			bun?.gc(true);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+	});
+
 	it("rejects nested async helpers before launching children", async () => {
 		let launches = 0;
 		await assert.rejects(
