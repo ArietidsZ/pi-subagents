@@ -455,16 +455,16 @@ const dispose = registerBackgroundWorkProvider({
   name: "my-background-extension",
   wakeChannels: ["my-extension:job-finished"],
   listActiveWork: (context) => jobs
-    .filter((job) => job.status === "running" && (!context || job.ownerSessionId === context.sessionId))
+    .filter((job) => job.status === "running" && (!context || context.sessionIds.includes(job.ownerSessionId)))
     .map((job) => ({ id: job.id, sessionId: job.ownerSessionId })),
-  reconcile: ({ sessionId, nowMs }) => reconcileJobs(sessionId, nowMs),
+  reconcile: ({ sessionIds, nowMs }) => reconcileJobs(sessionIds, nowMs),
 });
 ```
 
 Semantics:
 
-- Each item needs a stable provider-local ID and the exact Pi session ID that owns it. `bg_wait` captures those identities rather than a count, so one job finishing while another starts still satisfies first-completion waits without losing the replacement.
-- `listActiveWork` receives an optional `{ sessionId, nowMs }` context during snapshots. Providers can use `sessionId` to avoid scanning unrelated work; existing zero-argument `() => items` providers continue to work, and returned items are still validated and filtered to the exact requested session.
+- Each item needs a stable provider-local ID and the session that owns it, as either `ctx.sessionManager.getSessionId()` or the session file path (`ctx.sessionManager.getSessionFile()`); both are accepted. `bg_wait` captures those identities rather than a count, so one job finishing while another starts still satisfies first-completion waits without losing the replacement.
+- `listActiveWork` receives an optional `{ sessionId, sessionIds, nowMs }` context during snapshots, and `reconcile` receives the same fields. `sessionIds` holds every form of the current session (its file path when it has one, and its session id); `sessionId` is the first of them. Providers can use them to avoid scanning unrelated work; existing zero-argument `() => items` providers continue to work, and returned items are still validated and filtered to the current session. Each provider is called once per snapshot.
 - It filters snapshots to the active session, fails closed if a provider disappears while its work is tracked, and surfaces malformed snapshots or provider errors with provider context.
 - Wake channels only shorten polling; validated snapshots remain authoritative.
 - Providers share a registry through `Symbol.for("pi-subagents.background-work.v1")`, allowing independently loaded extension modules to meet in one Pi process.

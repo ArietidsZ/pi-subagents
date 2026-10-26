@@ -2359,7 +2359,7 @@ export interface ActiveAsyncCapacitySnapshot {
 export interface SubagentState {
 	baseCwd: string;
 	currentSessionId: string | null;
-	/** Exact SDK runtime session ID for supervisor ownership; never a session file path. */
+	/** Exact SDK runtime session ID (`getSessionId()`) for supervisor ownership and background-work matching; never a session file path. */
 	supervisorOwnerSessionId?: string | null;
 	/** Session for which active status projections were restored successfully. */
 	statusProjectionSessionId?: string | null;

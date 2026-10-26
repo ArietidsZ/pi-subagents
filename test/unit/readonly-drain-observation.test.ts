@@ -24,7 +24,7 @@ it("only the installed runtime drain can complete evidence, not acknowledgements
 		const pi = { on(event: string, handler: Handler) { handlers.set(event, [...handlers.get(event) ?? [], handler]); }, events: { on() { return () => {}; } } };
 		observeReadonlyChildHookDrain(hooks, true, file); hooks[0].factory(pi as never);
 		const settled = captureReadonlyChildDrain(hooks);
-		const ctx = { hasUI: kind === "UI", sessionManager: { getSessionFile: () => file } };
+		const ctx = { hasUI: kind === "UI", sessionManager: { getSessionFile: () => file, getSessionId: () => "drain-session" } };
 		for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
 		const ends = handlers.get("agent_end")!;
 		assert.equal(ends.length, 2, "acknowledgement and actual drain remain distinct");

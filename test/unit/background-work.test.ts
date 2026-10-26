@@ -97,14 +97,42 @@ describe("background-work provider protocol", () => {
 
 		assert.deepEqual(listBackgroundWorkProviders(), [replacement]);
 		assert.deepEqual(listBackgroundWorkWakeChannels(), ["patty:finished"]);
-		assert.deepEqual(snapshotBackgroundWork("session-a", 42), {
+		assert.deepEqual(snapshotBackgroundWork(["session-a"], 42), {
 			providers: ["patty"],
 			items: [{ provider: "patty", id: "mine", sessionId: "session-a" }],
 		});
-		assert.deepEqual(context, { sessionId: "session-a", nowMs: 42 });
+		assert.deepEqual(context, { sessionId: "session-a", sessionIds: ["session-a"], nowMs: 42 });
 
 		disposeReplacement();
 		assert.deepEqual(listBackgroundWorkProviders(), []);
+	});
+
+	it("keeps items keyed by any form of the current session and calls each provider once", () => {
+		let reconciles = 0;
+		let lists = 0;
+		let listContext: BackgroundWorkListContext | undefined;
+		registerBackgroundWorkProvider({
+			name: "patty",
+			reconcile: () => { reconciles++; },
+			listActiveWork: (context) => {
+				lists++;
+				listContext = context;
+				return [
+					{ id: "by-file", sessionId: "/sessions/a.jsonl" },
+					{ id: "by-id", sessionId: "session-a" },
+					{ id: "other-file", sessionId: "/sessions/b.jsonl" },
+					{ id: "other-id", sessionId: "session-b" },
+				];
+			},
+		});
+
+		assert.deepEqual(snapshotBackgroundWork(["/sessions/a.jsonl", "session-a"], 42).items, [
+			{ provider: "patty", id: "by-file", sessionId: "/sessions/a.jsonl" },
+			{ provider: "patty", id: "by-id", sessionId: "session-a" },
+		]);
+		assert.deepEqual(listContext, { sessionId: "/sessions/a.jsonl", sessionIds: ["/sessions/a.jsonl", "session-a"], nowMs: 42 });
+		assert.equal(reconciles, 1);
+		assert.equal(lists, 1);
 	});
 
 	it("passes an optional session context while preserving legacy providers and exact filtering", () => {
@@ -129,7 +157,7 @@ describe("background-work provider protocol", () => {
 			},
 		});
 
-		assert.deepEqual(snapshotBackgroundWork("session-a", 42), {
+		assert.deepEqual(snapshotBackgroundWork(["session-a"], 42), {
 			providers: ["legacy", "scoped"],
 			items: [
 				{ provider: "legacy", id: "legacy-job", sessionId: "session-a" },
@@ -137,7 +165,7 @@ describe("background-work provider protocol", () => {
 			],
 		});
 		assert.equal(legacyCalled, true);
-		assert.deepEqual(listContext, { sessionId: "session-a", nowMs: 42 });
+		assert.deepEqual(listContext, { sessionId: "session-a", sessionIds: ["session-a"], nowMs: 42 });
 	});
 
 	it("validates provider metadata and work items strictly", () => {
@@ -148,7 +176,7 @@ describe("background-work provider protocol", () => {
 			name: "patty",
 			listActiveWork: () => [{ id: "job", sessionId: "session-a", extra: true } as never],
 		});
-		assert.throws(() => snapshotBackgroundWork("session-a"), /unknown fields: extra/);
+		assert.throws(() => snapshotBackgroundWork(["session-a"]), /unknown fields: extra/);
 		clearRegistry();
 
 		registerBackgroundWorkProvider({
@@ -158,7 +186,7 @@ describe("background-work provider protocol", () => {
 				{ id: "job", sessionId: "session-a" },
 			],
 		});
-		assert.throws(() => snapshotBackgroundWork("session-a"), /duplicate item 'job'/);
+		assert.throws(() => snapshotBackgroundWork(["session-a"]), /duplicate item 'job'/);
 	});
 
 	it("validates scoped provider results before filtering them", () => {
@@ -166,7 +194,7 @@ describe("background-work provider protocol", () => {
 			name: "scoped",
 			listActiveWork: () => [{ id: "job", sessionId: "session-a", extra: true } as never],
 		});
-		assert.throws(() => snapshotBackgroundWork("session-a"), /unknown fields: extra/);
+		assert.throws(() => snapshotBackgroundWork(["session-a"]), /unknown fields: extra/);
 
 		clearRegistry();
 		registerBackgroundWorkProvider({
@@ -179,7 +207,7 @@ describe("background-work provider protocol", () => {
 				];
 			},
 		});
-		assert.throws(() => snapshotBackgroundWork("session-a"), /duplicate item 'job'/);
+		assert.throws(() => snapshotBackgroundWork(["session-a"]), /duplicate item 'job'/);
 	});
 
 	it("accepts path-like session ids up to the bound and rejects longer ids", () => {
@@ -191,18 +219,18 @@ describe("background-work provider protocol", () => {
 			name: "patty",
 			listActiveWork: () => [{ id: "job", sessionId: longSessionId }],
 		});
-		assert.deepEqual(snapshotBackgroundWork(longSessionId), {
+		assert.deepEqual(snapshotBackgroundWork([longSessionId]), {
 			providers: ["patty"],
 			items: [{ provider: "patty", id: "job", sessionId: longSessionId }],
 		});
-		assert.throws(() => snapshotBackgroundWork(overBoundSessionId), /at most 4096 characters/);
+		assert.throws(() => snapshotBackgroundWork([overBoundSessionId]), /at most 4096 characters/);
 
 		clearRegistry();
 		registerBackgroundWorkProvider({
 			name: "patty",
 			listActiveWork: () => [{ id: "job", sessionId: overBoundSessionId }],
 		});
-		assert.throws(() => snapshotBackgroundWork("session-a"), /at most 4096 characters/);
+		assert.throws(() => snapshotBackgroundWork(["session-a"]), /at most 4096 characters/);
 	});
 
 	it("preserves list and reconcile errors with provider context", () => {
@@ -211,14 +239,14 @@ describe("background-work provider protocol", () => {
 			reconcile: () => { throw new Error("pid probe failed"); },
 			listActiveWork: () => [],
 		});
-		assert.throws(() => snapshotBackgroundWork("session-a"), /broken-reconcile.*pid probe failed/);
+		assert.throws(() => snapshotBackgroundWork(["session-a"]), /broken-reconcile.*pid probe failed/);
 		clearRegistry();
 
 		registerBackgroundWorkProvider({
 			name: "broken-list",
 			listActiveWork: () => { throw new Error("registry unavailable"); },
 		});
-		assert.throws(() => snapshotBackgroundWork("session-a"), /broken-list.*registry unavailable/);
+		assert.throws(() => snapshotBackgroundWork(["session-a"]), /broken-list.*registry unavailable/);
 	});
 
 	it("discovers wake channels without reconciling or listing work", () => {
@@ -235,6 +263,24 @@ describe("background-work provider protocol", () => {
 });
 
 describe("bg_wait with background-work providers", () => {
+	it("waits for provider work keyed by the Pi session id in a session that has a file", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-provider-session-id-"));
+		try {
+			let active = true;
+			registerBackgroundWorkProvider({
+				name: "patty",
+				listActiveWork: () => active ? [{ id: "job-a", sessionId: "session-a" }] : [],
+			});
+			const state = makeState("/sessions/a.jsonl");
+			state.supervisorOwnerSessionId = "session-a";
+			const result = await waitForSubagents({}, undefined, waitDeps(root, state, undefined, async () => { active = false; }));
+			assert.equal(result.isError, undefined);
+			assert.match(textOf(result), /1 of 1 item\(s\) finished/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("detects completion when another item replaces it at the same count", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-provider-replace-"));
 		try {

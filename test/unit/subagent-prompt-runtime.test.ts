@@ -20,6 +20,7 @@ import { execFileSync } from "node:child_process";
 import { createNestedRoute, nestedResultsPath } from "../../src/runs/shared/nested-events.ts";
 import { updateActiveRunIndex } from "../../src/runs/background/active-run-index.ts";
 import { createChildHooks } from "../../src/runs/shared/child-hooks.ts";
+import { registerBackgroundWorkProvider } from "../../src/api/background-work.ts";
 import { ensureSupervisorChannelDir, resolveSupervisorChannelDir } from "../../src/intercom/native-supervisor-channel.ts";
 import { INTERCOM_SESSION_IDENTITY_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, TEMP_ROOT_DIR, SUBAGENT_FOREGROUND_COMPLETE_EVENT, type SubagentState } from "../../src/shared/types.ts";
 import registerSubagentPromptRuntime, {
@@ -50,7 +51,7 @@ it("does not skip drain for in-process child sessions when hasUI is true", async
 			children: [{ agent: "reviewer", index: 0, status: "detached", updatedAt: 1 }],
 		}]]),
 	} as SubagentState;
-	const ctx = { hasUI: true, sessionManager: { getSessionFile: () => sessionId } };
+	const ctx = { hasUI: true, sessionManager: { getSessionFile: () => sessionId, getSessionId: () => "reviewer-ui-session" } };
 	const emit = async (name: string, event: unknown) => { for (const fn of handlers.get(name) ?? []) await fn(event, ctx); };
 	registerSubagentPromptRuntime({
 		on: (name: string, fn: Function) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -82,7 +83,7 @@ it("reads a late-installed owner barrier for each final drain and balances the h
 		}]]),
 	} as SubagentState;
 	const config = childConfig({ runtimeState, holdFinalDrain: (value) => { held.push(value); } });
-	const ctx = { hasUI: true, sessionManager: { getSessionFile: () => sessionId } };
+	const ctx = { hasUI: true, sessionManager: { getSessionFile: () => sessionId, getSessionId: () => "fanout-owner-session" } };
 	const emit = async (name: string) => { for (const fn of handlers.get(name) ?? []) await fn({}, ctx); };
 	registerSubagentPromptRuntime({
 		on: (name: string, fn: Function) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -105,6 +106,37 @@ it("reads a late-installed owner barrier for each final drain and balances the h
 	for (const handler of listeners.get(SUBAGENT_FOREGROUND_COMPLETE_EVENT) ?? []) handler();
 	await ended;
 	assert.deepEqual(held, [true, false, true, false]);
+});
+
+it("keeps a file-backed child's final drain waiting for provider work keyed by its session id", async () => {
+	const handlers = new Map<string, Function[]>();
+	const listeners = new Map<string, Array<() => void>>();
+	let active = true;
+	const dispose = registerBackgroundWorkProvider({
+		name: "child-session-id",
+		wakeChannels: ["child-session-id:done"],
+		listActiveWork: () => active ? [{ id: "job", sessionId: "child-session-id" }] : [],
+	});
+	try {
+		const ctx = { hasUI: false, sessionManager: { getSessionFile: () => "/sessions/child.jsonl", getSessionId: () => "child-session-id" } };
+		const emit = async (name: string) => { for (const fn of handlers.get(name) ?? []) await fn({}, ctx); };
+		registerSubagentPromptRuntime({
+			on: (name: string, fn: Function) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
+			registerTool: () => {},
+			events: { on: (channel: string, handler: () => void) => { listeners.set(channel, [...(listeners.get(channel) ?? []), handler]); return () => {}; } },
+		} as never, childConfig());
+		await emit("session_start");
+		let settled = false;
+		const ended = emit("agent_end").then(() => { settled = true; });
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		assert.equal(settled, false);
+		active = false;
+		for (const handler of listeners.get("child-session-id:done") ?? []) handler();
+		await ended;
+		assert.equal(settled, true);
+	} finally {
+		dispose();
+	}
 });
 
 it("does not grant nested wait access for an invalid inherited route", async (t) => {
@@ -137,7 +169,7 @@ it("registered child bg_wait discovers nested personas and agent_end drains the 
 	const events = createEventBus();
 	const tools = new Map<string, { execute: Function }>();
 	const held: boolean[] = [];
-	const ctx = { hasUI: false, sessionManager: { getSessionFile: () => sessionId } };
+	const ctx = { hasUI: false, sessionManager: { getSessionFile: () => sessionId, getSessionId: () => "nested-child-session" } };
 	const emit = async (event: string) => { for (const fn of handlers.get(event) ?? []) await fn({}, ctx); };
 	const writeStatus = (state: "running" | "complete") => {
 		fs.mkdirSync(asyncDir, { recursive: true });
