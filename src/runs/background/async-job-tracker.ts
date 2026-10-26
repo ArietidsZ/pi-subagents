@@ -15,6 +15,7 @@ import {
 	SUBAGENT_CHILD_STATUS_EVENT,
 	SUBAGENT_CONTROL_EVENT,
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
+	SUBAGENT_JOBS_CHANGED_EVENT,
 	SUBAGENT_STEERING_NOTICE_EVENT,
 	WIDGET_ANIMATION_INTERVAL_MS,
 } from "../../shared/types.ts";
@@ -117,6 +118,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	};
 	const rerenderWidget = (ctx: ExtensionContext, jobs = Array.from(state.asyncJobs.values())) => {
 		options.onJobsChanged?.();
+		pi.events.emit(SUBAGENT_JOBS_CHANGED_EVENT, { version: 1 });
 		if (state.widgetsSuspended) return;
 		renderWidget(ctx, options.widgetEnabled === false ? [] : jobs, options.widgetCollapsed, options.widgetLayout);
 		(ctx.ui as { requestRender?: () => void }).requestRender?.();

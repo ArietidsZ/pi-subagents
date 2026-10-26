@@ -99,6 +99,9 @@ describe("subagent extension RPC bridge", () => {
 			(reply as { data: { events?: { childStatus?: string } } }).data.events?.childStatus,
 			SUBAGENT_CHILD_STATUS_EVENT,
 		);
+		const advertised = (reply as { data: { events?: { jobsChanged?: string; asyncStarted?: string } } }).data.events;
+		assert.equal(advertised?.jobsChanged, "subagent:jobs-changed");
+		assert.equal(advertised?.asyncStarted, "subagent:async-started");
 		assert.equal(
 			(reply as { data: { capabilities?: { nonRecoveringSteer?: boolean } } }).data.capabilities?.nonRecoveringSteer,
 			true,
