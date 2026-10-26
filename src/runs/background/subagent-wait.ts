@@ -130,7 +130,7 @@ export interface SubagentWaitDeps {
 	subscribe?: (input: { targetKind: "async" | "foreground"; runId: string; requestedId: string; timeoutMs: number }) => { token: string; expiresAt: number };
 	/** Injectable provider protocol surfaces for deterministic tests. */
 	backgroundWork?: {
-		snapshot(sessionId: string, nowMs: number): BackgroundWorkSnapshot;
+		snapshot(sessionIds: readonly string[], nowMs: number): BackgroundWorkSnapshot;
 		wakeChannels(): readonly string[];
 	};
 	/**
@@ -275,7 +275,10 @@ function backgroundWorkIdentity(item: RegisteredBackgroundWorkItem): string {
 function backgroundWorkForSession(deps: SubagentWaitDeps, nowMs: number): BackgroundWorkSnapshot {
 	const sessionId = deps.state.currentSessionId;
 	if (!sessionId) throw new Error("bg_wait requires an active session identity to scope background work safely.");
-	return deps.backgroundWork?.snapshot(sessionId, nowMs) ?? snapshotBackgroundWork(sessionId, nowMs);
+	// Providers may key items by the session file path or by getSessionId(); accept both.
+	const piSessionId = deps.state.supervisorOwnerSessionId;
+	const sessionIds = piSessionId ? [sessionId, piSessionId] : [sessionId];
+	return deps.backgroundWork?.snapshot(sessionIds, nowMs) ?? snapshotBackgroundWork(sessionIds, nowMs);
 }
 
 export function waitRunScopes(deps: Pick<SubagentWaitDeps, "asyncDirRoot" | "resultsDir" | "nestedRootRunId">): Array<{ asyncDirRoot: string; resultsDir: string }> {
