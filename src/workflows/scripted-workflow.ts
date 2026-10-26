@@ -43,7 +43,6 @@ export interface WorkflowScriptValidationOptions {
 	agentNameError?: (name: string) => string | undefined;
 }
 
-// A real file gives Bun a stable absolute resolver base on warm transpiler-cache hits.
 const WORKFLOW_WORKER_URL = new URL("../../workflow-script-worker.cjs", import.meta.url);
 let nodeWorkerSource: string | undefined;
 
@@ -1086,8 +1085,8 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 	let worker: Worker;
 	try {
 		const bun = typeof process.versions.bun === "string";
-		// Node's eval worker does not re-resolve inherited --import preloads after cwd
-		// changes. Keep that behavior; only Bun needs the file-backed resolver base.
+		// Bun needs a real file as its resolver base on warm transpiler-cache hits; Node keeps eval
+		// source because its eval worker does not re-resolve inherited --import preloads after a cwd change.
 		const source = bun ? WORKFLOW_WORKER_URL : (nodeWorkerSource ??= readFileSync(WORKFLOW_WORKER_URL, "utf8"));
 		worker = new Worker(source, { eval: !bun, workerData: { acornPath } });
 	} catch (error) {

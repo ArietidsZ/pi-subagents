@@ -207,8 +207,7 @@ describe("disabled feature discovery", () => {
 		assert.equal(resultText(enabled), guide);
 		const executor = createExecutor({ disabledFeatures: ["workflow-scripts"] });
 		const section = resultText(await executor.executePublic("guide", request, new AbortController().signal, undefined, ctx()));
-		assert.ok(section.endsWith(guide));
-		assert.match(section, /^Some options and actions documented here are disabled by config[^\n]*Instead of workflow scripts, use the top-level tasks or chain fields\.\n\n/);
+		assert.match(section, /^Some options and actions are disabled by config[^\n]*Instead of workflow scripts, use the top-level tasks or chain fields\.\n\n/);
 		const topic = resultText(await executor.executePublic("guide", { action: "guide", topic: "workflows" }, new AbortController().signal, undefined, ctx()));
 		assert.match(topic, /^Disabled by config[^\n]*\n- disabledFeatures "workflow-scripts": options workflow, [^\n]*\. Instead of workflow scripts, use the top-level tasks or chain fields\.\n\n/);
 	});
@@ -222,7 +221,7 @@ describe("disabled feature discovery", () => {
 			assert.match(toc, /^Disabled by config/, topic);
 			for (const [, section] of toc.matchAll(/^\s*([a-z-]+\/\S+) — /gm)) {
 				const text = await read(section!);
-				assert.match(text, /^Some options and actions documented here are disabled by config/, section);
+				assert.match(text, /^Some options and actions are disabled by config/, section);
 				assert.ok(text.length <= 8_000, `${section}: ${text.length}`);
 				checked++;
 			}

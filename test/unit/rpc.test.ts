@@ -91,15 +91,9 @@ describe("subagent extension RPC bridge", () => {
 		assert.equal(reply.success, true);
 		assert.equal(reply.method, "ping");
 		assert.equal((reply as { data: { version?: number } }).data.version, SUBAGENT_RPC_PROTOCOL_VERSION);
-		assert.equal(
-			(reply as { data: { events?: { asyncComplete?: string } } }).data.events?.asyncComplete,
-			"subagent:async-complete",
-		);
-		assert.equal(
-			(reply as { data: { events?: { childStatus?: string } } }).data.events?.childStatus,
-			SUBAGENT_CHILD_STATUS_EVENT,
-		);
-		const advertised = (reply as { data: { events?: { jobsChanged?: string; asyncStarted?: string } } }).data.events;
+		const advertised = (reply as { data: { events?: { asyncComplete?: string; childStatus?: string; jobsChanged?: string; asyncStarted?: string } } }).data.events;
+		assert.equal(advertised?.asyncComplete, "subagent:async-complete");
+		assert.equal(advertised?.childStatus, SUBAGENT_CHILD_STATUS_EVENT);
 		assert.equal(advertised?.jobsChanged, "subagent:jobs-changed");
 		assert.equal(advertised?.asyncStarted, "subagent:async-started");
 		assert.equal(

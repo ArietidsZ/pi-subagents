@@ -1,9 +1,8 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { snapshotBackgroundWork } from "../../api/background-work.ts";
 import type { Details, SubagentState } from "../../shared/types.ts";
 import { listAsyncRuns } from "./async-status.ts";
 import type { ReadonlyDrainObservation } from "../shared/readonly-drain-observation.ts";
-import { waitForSubagents, waitRunScopes, type SubagentWaitDeps, type SubagentWaitParams, type WaitEventBus } from "./subagent-wait.ts";
+import { backgroundWorkForSession, waitForSubagents, waitRunScopes, type SubagentWaitDeps, type SubagentWaitParams, type WaitEventBus } from "./subagent-wait.ts";
 
 export const DEFAULT_AUTO_DRAIN_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -36,9 +35,7 @@ function hasOutstandingWork(deps: AutoDrainDeps, sessionId: string, nowMs: numbe
 	const detachedForeground = [...(deps.state.foregroundRuns?.values() ?? [])].some((run) =>
 		run.sessionId === sessionId && run.children.some((child) => child.status === "detached")
 	);
-	// Providers may key items by the session file path or by getSessionId(); accept both.
-	const piSessionId = deps.state.supervisorOwnerSessionId;
-	return asyncRuns.length > 0 || snapshotBackgroundWork(piSessionId ? [sessionId, piSessionId] : [sessionId], nowMs).items.length > 0 || detachedForeground;
+	return asyncRuns.length > 0 || backgroundWorkForSession(deps, nowMs).items.length > 0 || detachedForeground;
 }
 
 /** Drain all work owned by the current headless session, including work added while draining. */

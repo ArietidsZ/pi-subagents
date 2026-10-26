@@ -360,24 +360,18 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		}
 		const applyChildLifecycle = (action: ChildLifecycleAction, event?: { type?: string; willRetry?: unknown }): void => {
 			if (action === "cancel-drain") {
-				// A non-retrying agent_end closes the turn, so it cancels the drain that ends
-				// this run. When the assistant already stopped cleanly it is the last event
-				// the child emits, so re-arm the drain here and keep the terminal stop:
-				// nothing else will arm it, and clearing it would report a settle timeout.
-				if (event?.type === "agent_end" && event.willRetry !== true && cleanTerminalAssistantStopReceived) {
-					agentSettledReceived = false;
-					terminalAgentEndReceived = true;
-					clearFinalDrainTimers();
-					clearWatchdogTailTimer();
+				// After a clean final stop, a non-retrying agent_end may be the child's last event
+				// (Pi may not emit agent_settled), so it re-arms the drain instead of cancelling it.
+				terminalAgentEndReceived = event?.type === "agent_end" && event.willRetry !== true && cleanTerminalAssistantStopReceived;
+				agentSettledReceived = false;
+				clearFinalDrainTimers();
+				clearWatchdogTailTimer();
+				if (terminalAgentEndReceived) {
 					startFinalDrain();
 					return;
 				}
 				cleanTerminalAssistantStopReceived = false;
-				agentSettledReceived = false;
-				terminalAgentEndReceived = false;
 				compactionAfterFinalOpen = false;
-				clearFinalDrainTimers();
-				clearWatchdogTailTimer();
 				return;
 			}
 			if (action === "start-drain") startFinalDrain();

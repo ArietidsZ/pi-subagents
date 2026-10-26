@@ -272,7 +272,7 @@ function backgroundWorkIdentity(item: RegisteredBackgroundWorkItem): string {
 	return `${item.provider}\0${item.sessionId}\0${item.id}`;
 }
 
-function backgroundWorkForSession(deps: SubagentWaitDeps, nowMs: number): BackgroundWorkSnapshot {
+export function backgroundWorkForSession(deps: Pick<SubagentWaitDeps, "state" | "backgroundWork">, nowMs: number): BackgroundWorkSnapshot {
 	const sessionId = deps.state.currentSessionId;
 	if (!sessionId) throw new Error("bg_wait requires an active session identity to scope background work safely.");
 	// Providers may key items by the session file path or by getSessionId(); accept both.

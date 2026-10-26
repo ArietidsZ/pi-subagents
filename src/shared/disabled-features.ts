@@ -128,5 +128,5 @@ export function disabledFeatureNotice(surface: DisabledFeatureSurface): string |
 export function disabledFeatureSectionNotice(surface: DisabledFeatureSurface): string | undefined {
 	if (surface.features.size === 0) return undefined;
 	const replacement = surface.features.has("workflow-scripts") ? ` ${WORKFLOW_SCRIPTS_REPLACEMENT}` : "";
-	return `Some options and actions documented here are disabled by config in this session; guide topic tool-reference lists them.${replacement}`;
+	return `Some options and actions are disabled by config in this session; guide topic tool-reference lists them.${replacement}`;
 }

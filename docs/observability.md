@@ -334,7 +334,7 @@ Async events:
 
 - `subagent:async-started`
 - `subagent:async-complete`
-- `subagent:jobs-changed`, which carries only `{ version: 1 }` and fires whenever the parent's background job view changes; see [extension-api.md](extension-api.md#refresh-a-host-view-without-polling)
+- `subagent:jobs-changed` (see [extension-api.md](extension-api.md#refresh-a-host-view-without-polling))
 
 For regular async starts, the `subagent:async-started` payload includes redacted `task` and `goal` prompt fields. Async workflow script roots emit the same event with `mode: "workflow"` after their initial `status.json` is durable; workflow roots can omit `task`, and any included prompt fields are redacted. Their keyed children are then announced dynamically through `subagent:child-status`. Companion UI extensions can combine those hints with the authoritative live lifecycle artifacts under `asyncDir` without scraping terminal output.
 

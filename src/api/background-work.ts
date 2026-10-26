@@ -17,19 +17,14 @@ export interface BackgroundWorkItem {
 	sessionId: string;
 }
 
-export interface BackgroundWorkReconcileContext {
-	sessionId: string;
-	/** Every form the current session is known by: its file path when it has one, and `getSessionId()`. Includes `sessionId`. */
-	sessionIds: readonly string[];
-	nowMs: number;
-}
-
 export interface BackgroundWorkListContext {
 	sessionId: string;
 	/** Every form the current session is known by: its file path when it has one, and `getSessionId()`. Includes `sessionId`. */
 	sessionIds: readonly string[];
 	nowMs: number;
 }
+
+export type BackgroundWorkReconcileContext = BackgroundWorkListContext;
 
 export interface BackgroundWorkProvider {
 	name: string;
@@ -165,9 +160,8 @@ export function listBackgroundWorkWakeChannels(): readonly string[] {
 
 /**
  * Reconcile and snapshot active provider work owned by one exact Pi session.
- * `sessionIds` lists that session's identity forms (its file path and
- * `getSessionId()`); the first is passed to providers as `sessionId`. Items
- * keyed by any of them are kept, and each provider is still called once.
+ * `sessionIds` lists that session's identity forms; the first is passed to
+ * providers as `sessionId`, and items keyed by any of them are kept.
  */
 export function snapshotBackgroundWork(sessionIds: readonly string[], nowMs = Date.now()): BackgroundWorkSnapshot {
 	const accepted = [...new Set(sessionIds.map((value) => validateString(value, "Background-work snapshot sessionId", MAX_SESSION_ID_LENGTH)))];

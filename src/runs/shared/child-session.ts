@@ -276,17 +276,12 @@ function resetExtensionCacheOnReload(loader: object): boolean {
 /** Applies `values` to `process.env` and returns a function that puts back the values they replaced. */
 function applyProcessEnv(values: Record<string, string | undefined> | undefined): () => void {
 	if (!values) return () => {};
-	const previous = Object.keys(values).map((name) => [name, process.env[name]] as const);
+	const previous = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
 	for (const [name, value] of Object.entries(values)) {
 		if (value === undefined) delete process.env[name];
 		else process.env[name] = value;
 	}
-	return () => {
-		for (const [name, value] of previous) {
-			if (value === undefined) delete process.env[name];
-			else process.env[name] = value;
-		}
-	};
+	return () => applyProcessEnv(previous);
 }
 
 /**
