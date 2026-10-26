@@ -28,7 +28,7 @@ import {
 	buildProactiveSkillSubagentRecommendationLines,
 } from "./proactive-skills.ts";
 import { parseFrontmatter, parseUnquotedList } from "./frontmatter.ts";
-import { resolveEffectiveThinking, toModelInfo } from "../shared/model-info.ts";
+import { resolveEffectiveThinking, THINKING_LEVELS, toModelInfo } from "../shared/model-info.ts";
 import { resolveSubagentModelOverride, type ParentModel } from "../runs/shared/model-resolution.ts";
 import { validateToolBudgetConfig } from "../runs/shared/tool-budget.ts";
 import { formatReviewGateLabel, validateAcceptanceInput } from "../runs/shared/acceptance.ts";
@@ -528,12 +528,11 @@ function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknown>): st
 		else return "config.mutationTools must be a comma-separated string, empty string, or false when provided.";
 	}
 	if (hasKey(cfg, "thinking")) {
-		if (cfg.thinking === false || cfg.thinking === "") delete target.thinking;
-		else if (typeof cfg.thinking === "string") {
-			const thinking = cfg.thinking.trim();
-			if (thinking) target.thinking = thinking;
-			else delete target.thinking;
-		} else return "config.thinking must be a string or false when provided.";
+		const thinking = typeof cfg.thinking === "string" ? cfg.thinking.trim() : cfg.thinking;
+		const level = THINKING_LEVELS.find((candidate) => candidate === thinking);
+		if (thinking === false || thinking === "") delete target.thinking;
+		else if (level) target.thinking = level;
+		else return `config.thinking must be one of ${THINKING_LEVELS.join(", ")}, or false when provided.`;
 	}
 	if (hasKey(cfg, "systemPromptMode")) {
 		if (cfg.systemPromptMode === "append" || cfg.systemPromptMode === "replace") target.systemPromptMode = cfg.systemPromptMode;
