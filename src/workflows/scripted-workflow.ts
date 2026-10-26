@@ -1085,10 +1085,12 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 	let worker: Worker;
 	try {
 		const bun = typeof process.versions.bun === "string";
-		// Bun needs a real file as its resolver base on warm transpiler-cache hits; Node keeps eval
-		// source because its eval worker does not re-resolve inherited --import preloads after a cwd change.
-		const source = bun ? WORKFLOW_WORKER_URL : (nodeWorkerSource ??= readFileSync(WORKFLOW_WORKER_URL, "utf8"));
-		worker = new Worker(source, { eval: !bun, workerData: { acornPath } });
+		// Bun needs a real file as its resolver base on warm transpiler-cache hits, and no eval key at all: with one,
+		// its Worker finalizer passes the URL to URL.revokeObjectURL and throws. Node keeps eval source because its
+		// eval worker does not re-resolve inherited --import preloads after a cwd change.
+		worker = bun
+			? new Worker(WORKFLOW_WORKER_URL, { workerData: { acornPath } })
+			: new Worker(nodeWorkerSource ??= readFileSync(WORKFLOW_WORKER_URL, "utf8"), { eval: true, workerData: { acornPath } });
 	} catch (error) {
 		throw new WorkflowScriptError(`Workflow worker could not start: ${error instanceof Error ? error.message : String(error)}`, emptyPartial(), "runtime", { cause: error });
 	}
