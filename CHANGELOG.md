@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Highlights
+
+- Using subagents no longer breaks your main session's prompt cache on models that take system messages mid-conversation, so each turn after the first subagent result is cheaper and faster. A child that runs its own subagents keeps its cache too.
+- Background subagents that finished their work no longer end as "exited with code 0 before writing a result".
+- Children placed on another machine (a Rex tab, Rex over SSH, or a Herdr pane) launch instead of being refused, and workflows no longer crash on Windows standalone Pi builds.
+
 ### Fixed
 
 - A child that had called `subagent`, or whose provider needed tool ids rewritten, missed the prompt cache on every later request when its model takes system messages mid-conversation. Removing parent-only subagent history made Pi fold every mid-conversation system message into the leading prompt; that history is now removed without moving Pi's system messages. (#3063)
