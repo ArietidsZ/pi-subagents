@@ -62,6 +62,11 @@ Each PR should prove one clear invariant and stop before it turns into a framewo
 Delegation must stay fast enough that one parent session can keep several children moving without the operator waiting on the tool.
 Status, progress, watchers, TUI refresh, filesystem scans, and orchestration setup are hot paths.
 Token cost is part of the same constraint: extra context, extra children, and extra layers have to earn their keep.
+Prompt-cache hits are part of token cost.
+A change must not alter what the parent or a child already sent to the model: earlier history, the system prompt, or tool definitions and their order.
+Any of these sends the whole context uncached on the next request.
+New information for the model is appended.
+A change that breaks the cache needs measurement and explicit owner approval.
 A change that makes those paths slower needs proof or explicit owner approval.
 Unmeasured risk in a hot path is a reason to refuse the change.
 
@@ -87,6 +92,7 @@ It does not add a second path to an outcome the operator can already reach with 
 It does not treat external agents as native Pi children before their capabilities are proven.
 It does not run background reviewers on every edit by default; delegation happens because the operator asked for it, directly or through their instructions.
 It does not accept a slower status loop, watcher, or common workflow just to make the machinery look richer.
+It does not accept a change that breaks the prompt cache of the parent or its children without measurement and owner approval.
 
 ## How to judge a change
 
@@ -94,5 +100,5 @@ A change fits when it gives one operator more leverage with the same or better c
 A change fits when it composes from existing primitives or honestly shows why it cannot.
 A change fits when no existing path already gives the operator the same outcome, or it shows why that path fails.
 A change fits when it keeps or improves speed and token cost, or proves why a cost is worth paying.
-A change does not fit when it adds hot-path cost without proof, hides running work, accepts confidence in place of evidence, widens authority beyond the operator's instructions, or grows scope toward general project management.
+A change does not fit when it adds hot-path cost without proof, breaks the prompt cache, hides running work, accepts confidence in place of evidence, widens authority beyond the operator's instructions, or grows scope toward general project management.
 When a proposal is in doubt, ask whether it makes delegation more trustworthy for the person whose name it runs under.
