@@ -7187,7 +7187,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			if (action === "guide") {
 				try {
 					const guide = readSubagentGuide(paramsWithResolvedCwd.topic);
-					// Every topic can teach a disabled field, so each response carries the notice.
 					const notice = paramsWithResolvedCwd.topic?.includes("/") ? disabledFeatureSectionNotice(disabledFeatures) : disabledFeatureNotice(disabledFeatures);
 					return {
 						content: [{ type: "text", text: notice ? `${notice}\n\n${guide}` : guide }],

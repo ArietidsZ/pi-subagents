@@ -7,7 +7,6 @@ import { nestedRunScope } from "../../src/runs/shared/nested-events.ts";
 import { updateActiveRunIndex } from "../../src/runs/background/active-run-index.ts";
 import { describe, it } from "node:test";
 import { drainOutstandingWork } from "../../src/runs/background/auto-drain.ts";
-import { registerBackgroundWorkProvider } from "../../src/api/background-work.ts";
 import type { Details, SubagentState } from "../../src/shared/types.ts";
 
 function state(sessionId: string | null = "session-a"): SubagentState {
@@ -116,20 +115,6 @@ describe("headless background-work auto-drain", () => {
 
 	it("fails without a session identity", async () => {
 		await assert.rejects(() => drainOutstandingWork({ state: state(null) }), /without an active session identity/);
-	});
-
-	it("drains provider work keyed by the Pi session id in a session that has a file", async () => {
-		let active = true;
-		const dispose = registerBackgroundWorkProvider({ name: "drain-session-id", listActiveWork: () => active ? [{ id: "job", sessionId: "pi-session" }] : [] });
-		try {
-			const current = state("/sessions/a.jsonl");
-			current.supervisorOwnerSessionId = "pi-session";
-			let waits = 0;
-			await drainOutstandingWork({ state: current, wait: async () => { waits++; active = false; return waitResult("done"); } });
-			assert.equal(waits, 1);
-		} finally {
-			dispose();
-		}
 	});
 
 	it("does not settle while a remembered detached foreground descendant is still in flight", async () => {

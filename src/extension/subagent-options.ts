@@ -27,8 +27,8 @@ export function flattenSubagentToolOptions(params: Record<string, unknown>, disa
 	const { script, ...rest } = options as Record<string, unknown>;
 	if (script !== undefined) {
 		if (typeof script !== "string" || !script.trim()) throw new Error("subagent: options.script must be the workflow script's source text.");
-		if (topLevel.workflow !== undefined) throw new Error("subagent: options.script replaces workflow; pass one of them.");
-		return { ...flattenSubagentToolOptions({ ...topLevel, options: rest }, disabled), workflowScript: script } as SubagentParamsLike;
+		if (topLevel.workflow !== undefined) throw new Error("subagent: options.script replaces workflow; pass only one of them.");
+		return { ...flattenSubagentToolOptions({ ...topLevel, options: rest }, disabled), workflowScript: script };
 	}
 	const entries = Object.entries(options);
 	const enabledKeys = SUBAGENT_OPTION_KEYS.filter((key) => !disabled?.params.has(key));
@@ -47,7 +47,7 @@ export function flattenSubagentToolOptions(params: Record<string, unknown>, disa
 	if (disabledKey) throw new Error(`subagent option 'options.${disabledKey}' is disabled by config ${disabled!.params.get(disabledKey)}.`);
 	// Pi converts only the declared top-level parameters ("true" -> true); `options` is an untyped bag in the
 	// tool schema, so its values get the same conversion here. Some providers send nested scalars as strings.
-	const converted = Value.Convert(SubagentOptionParams, structuredClone(options)) as Record<string, unknown>;
+	const converted = Value.Convert(SubagentOptionParams, structuredClone(options));
 	if (!optionsValidator.Check(converted)) {
 		const errors = [...optionsValidator.Errors(converted)].slice(0, 4).map((error) => `options${error.instancePath.replaceAll("/", ".")} ${error.message}`);
 		throw new Error(`subagent: ${errors.join("; ")}.`);

@@ -8,7 +8,6 @@ const CLOSE_FENCE = /^(`{3,}|~{3,})[ \t]*$/;
 // Through the Claude Agent SDK (pi-claude-bridge#35), text written after a tool call in the same turn reaches the session
 // only as a server summary, which drops fenced blocks; retrying the block fails again. Tool arguments arrive intact.
 const SUMMARY_NOTE = "On some hosts, text written after a tool call in the same turn reaches the session only as a summary without code blocks, so for the rest of this turn pass the script's source as a tool argument: options: { script: \"...\" } in place of workflow: true, with the call's other fields unchanged.";
-const FILE_FALLBACK = `If the block is in your reply: ${SUMMARY_NOTE}`;
 
 export type ReplyWorkflowScript = { script: string } | { error: string };
 
@@ -41,7 +40,7 @@ function scriptFromReply(content: AssistantMessage["content"]): ReplyWorkflowScr
 	const blocks = tagged.length > 0 ? tagged : plain.length === 1 ? plain : [];
 	if (blocks.length !== 1) {
 		const untagged = tagged.length === 0 && plain.length > 1 ? ` This reply has ${plain.length} untagged js blocks; open the script's block with the line "\`\`\`js workflow".` : "";
-		return { error: `workflow: true needs one fenced block in the same reply as the tool call, opened with the exact line "\`\`\`js workflow" and closed with "\`\`\`"; found ${tagged.length}.${untagged} ${FILE_FALLBACK}` };
+		return { error: `workflow: true needs one fenced block in the same reply as the tool call, opened with the exact line "\`\`\`js workflow" and closed with "\`\`\`"; found ${tagged.length}.${untagged} If the block is in your reply: ${SUMMARY_NOTE}` };
 	}
 	const script = blocks[0]!;
 	if (!script.trim()) return { error: "The script's fenced block in this reply is empty." };

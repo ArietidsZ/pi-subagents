@@ -40,9 +40,21 @@ function childConfig(overrides: Partial<ChildRuntimeConfig> = {}): ChildRuntimeC
 	return { fanoutChild: false, depth: 1, waitTool: { enabled: true }, fast: false, ...overrides };
 }
 
-it("does not skip drain for in-process child sessions when hasUI is true", async () => {
+function registerChild(ctx: unknown, config: ChildRuntimeConfig) {
 	const handlers = new Map<string, Function[]>();
 	const listeners = new Map<string, Array<() => void>>();
+	registerSubagentPromptRuntime({
+		on: (name: string, fn: Function) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
+		registerTool: () => {},
+		events: { on: (channel: string, handler: () => void) => { listeners.set(channel, [...(listeners.get(channel) ?? []), handler]); return () => {}; } },
+	} as never, config);
+	return {
+		emit: async (name: string, event: unknown = {}) => { for (const fn of handlers.get(name) ?? []) await fn(event, ctx); },
+		wake: (channel: string) => { for (const handler of listeners.get(channel) ?? []) handler(); },
+	};
+}
+
+it("does not skip drain for in-process child sessions when hasUI is true", async () => {
 	const held: boolean[] = [];
 	const sessionId = "reviewer-ui-session.jsonl";
 	const runtimeState = {
@@ -52,28 +64,21 @@ it("does not skip drain for in-process child sessions when hasUI is true", async
 		}]]),
 	} as SubagentState;
 	const ctx = { hasUI: true, sessionManager: { getSessionFile: () => sessionId, getSessionId: () => "reviewer-ui-session" } };
-	const emit = async (name: string, event: unknown) => { for (const fn of handlers.get(name) ?? []) await fn(event, ctx); };
-	registerSubagentPromptRuntime({
-		on: (name: string, fn: Function) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
-		registerTool: () => {},
-		events: { on: (channel: string, handler: () => void) => { listeners.set(channel, [...(listeners.get(channel) ?? []), handler]); return () => {}; } },
-	} as never, childConfig({ runtimeState, holdFinalDrain: (value) => { held.push(value); } }));
-	await emit("session_start", {});
+	const { emit, wake } = registerChild(ctx, childConfig({ runtimeState, holdFinalDrain: (value) => { held.push(value); } }));
+	await emit("session_start");
 	let settled = false;
 	const ended = emit("agent_end", { messages: [] }).then(() => { settled = true; });
 	await new Promise((resolve) => setTimeout(resolve, 30));
 	assert.equal(settled, false);
 	assert.deepEqual(held, [true]);
 	runtimeState.foregroundRuns.get("fg")!.children[0]!.status = "completed";
-	for (const handler of listeners.get(SUBAGENT_FOREGROUND_COMPLETE_EVENT) ?? []) handler();
+	wake(SUBAGENT_FOREGROUND_COMPLETE_EVENT);
 	await ended;
 	assert.equal(settled, true);
 	assert.deepEqual(held, [true, false]);
 });
 
 it("reads a late-installed owner barrier for each final drain and balances the hold", async () => {
-	const handlers = new Map<string, Function[]>();
-	const listeners = new Map<string, Array<() => void>>();
 	const held: boolean[] = [];
 	const sessionId = "fanout-owner-session.jsonl";
 	const runtimeState = {
@@ -84,12 +89,7 @@ it("reads a late-installed owner barrier for each final drain and balances the h
 	} as SubagentState;
 	const config = childConfig({ runtimeState, holdFinalDrain: (value) => { held.push(value); } });
 	const ctx = { hasUI: true, sessionManager: { getSessionFile: () => sessionId, getSessionId: () => "fanout-owner-session" } };
-	const emit = async (name: string) => { for (const fn of handlers.get(name) ?? []) await fn({}, ctx); };
-	registerSubagentPromptRuntime({
-		on: (name: string, fn: Function) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
-		registerTool: () => {},
-		events: { on: (channel: string, handler: () => void) => { listeners.set(channel, [...(listeners.get(channel) ?? []), handler]); return () => {}; } },
-	} as never, config);
+	const { emit, wake } = registerChild(ctx, config);
 	await emit("session_start");
 	let pending = true;
 	config.hasPendingSupervisorRequest = () => pending;
@@ -103,14 +103,12 @@ it("reads a late-installed owner barrier for each final drain and balances the h
 	await new Promise((resolve) => setTimeout(resolve, 30));
 	assert.equal(settled, false);
 	runtimeState.foregroundRuns.get("fg")!.children[0]!.status = "completed";
-	for (const handler of listeners.get(SUBAGENT_FOREGROUND_COMPLETE_EVENT) ?? []) handler();
+	wake(SUBAGENT_FOREGROUND_COMPLETE_EVENT);
 	await ended;
 	assert.deepEqual(held, [true, false, true, false]);
 });
 
 it("keeps a file-backed child's final drain waiting for provider work keyed by its session id", async () => {
-	const handlers = new Map<string, Function[]>();
-	const listeners = new Map<string, Array<() => void>>();
 	let active = true;
 	const dispose = registerBackgroundWorkProvider({
 		name: "child-session-id",
@@ -119,19 +117,14 @@ it("keeps a file-backed child's final drain waiting for provider work keyed by i
 	});
 	try {
 		const ctx = { hasUI: false, sessionManager: { getSessionFile: () => "/sessions/child.jsonl", getSessionId: () => "child-session-id" } };
-		const emit = async (name: string) => { for (const fn of handlers.get(name) ?? []) await fn({}, ctx); };
-		registerSubagentPromptRuntime({
-			on: (name: string, fn: Function) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
-			registerTool: () => {},
-			events: { on: (channel: string, handler: () => void) => { listeners.set(channel, [...(listeners.get(channel) ?? []), handler]); return () => {}; } },
-		} as never, childConfig());
+		const { emit, wake } = registerChild(ctx, childConfig());
 		await emit("session_start");
 		let settled = false;
 		const ended = emit("agent_end").then(() => { settled = true; });
 		await new Promise((resolve) => setTimeout(resolve, 30));
 		assert.equal(settled, false);
 		active = false;
-		for (const handler of listeners.get("child-session-id:done") ?? []) handler();
+		wake("child-session-id:done");
 		await ended;
 		assert.equal(settled, true);
 	} finally {

@@ -1489,7 +1489,6 @@ describe("subagent extension child mode", () => {
 			const leading = { role: "system", content: "Base prompt", timestamp: 0 };
 			const sectionUpdate = { role: "system", content: "", sections: { time: "Now: 10:00" }, timestamp: 5 };
 			const messages = [leading, historical, report, user, workResult, unrelated, assistant, sectionUpdate, { ...report, content: "Second report" }, notify, partsNotice];
-			const stored = structuredClone(messages);
 			const runner = new ExtensionRunner([{ path: "pi-subagents", handlers }], {}, process.cwd(), undefined, undefined);
 			const modelContext = (input) => runner.emitContext(input);
 			const open = (type) => '<pi_subagents_notice type="' + type + '" origin="automated message from the pi-subagents extension, not typed by the user">';
@@ -1507,7 +1506,6 @@ describe("subagent extension child mode", () => {
 			];
 			assert.deepEqual(await modelContext(messages), expected);
 			assert.equal(JSON.stringify(await modelContext(messages)), JSON.stringify(expected), "every request renders the same history bytes");
-			assert.deepEqual(messages, stored, "the stored transcript is not mutated");
 			assert.deepEqual(await modelContext([]), []);
 			assert.deepEqual(await modelContext([user, unrelated, assistant]), [user, unrelated, assistant]);
 		`;

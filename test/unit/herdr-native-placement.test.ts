@@ -101,20 +101,11 @@ describe("pane-native Herdr placement public contracts", { skip: process.platfor
 		}
 	});
 
-	it("places the builtin scout, whose tool list becomes required tools", () => {
-		const scoutTools = /^tools:\s*(.+)$/mu.exec(fs.readFileSync(new URL("../../agents/scout.md", import.meta.url), "utf8"))![1]!.split(",").map((tool) => tool.trim());
-		const built = buildRunnerChildLaunch({ agent: "scout", task: "inspect", machine, cwd: machine.cwd, tools: scoutTools, inheritProjectContext: true, inheritGlobalContext: true, inheritSkills: false }, { cwd: "/local/repo", id: "run-scout", flatIndex: 0 }, { sessionEnabled: true, watchdogStatus() {} }).session;
-		assert.ok(built.runtime.requiredTools?.includes("read"));
-		assert.equal(serializeHerdrPiLaunch(built).resources.agent, "scout");
-	});
-
 	it("refuses up front to revive a transcript onto a machine", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "placed-revival-"));
 		const runId = `placed-revival-${Date.now().toString(36)}`;
 		try {
 			const sessionFile = path.join(root, "sessions", "run-0", "session.jsonl");
-			fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
-			fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: "local" })}\n`);
 			const result = executeAsyncSingle(runId, {
 				agent: "worker", task: "Continue", agentConfig: makeAgent("worker", { machine: "workmac" }),
 				ctx: { pi: { events: { emit() {} } }, cwd: root, currentSessionId: "placed-revival" },

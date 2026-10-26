@@ -1899,7 +1899,7 @@ export function executeAsyncSingle(
 	const requestedMachine = params.machine ?? agentConfig.machine;
 	const machineUnsupported = formatHerdrMachineRunnerUnsupported({ machine: requestedMachine, agentName: agentConfig.name, runnerType: agentConfig.runner?.type, adapter: agentConfig.runner?.type === "external-cli" ? agentConfig.runner.adapter : undefined, worktree: params.worktree });
 	if (machineUnsupported) return formatAsyncStartError("single", machineUnsupported);
-	// Refuse before the runner starts: a placed child cannot restore a local transcript.
+	// Refuse before the runner starts; the placed launch would refuse only after the run exists.
 	if (requestedMachine && params.revivalLease) return formatAsyncStartError("single", PLACED_RESTORE_UNSUPPORTED);
 	const resolvedLauncher = resolveAgentRunnerLauncher(agentConfig, ctx.runnerLaunchers, requestedMachine);
 	if (resolvedLauncher.error) return formatAsyncStartError("single", resolvedLauncher.error);

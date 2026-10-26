@@ -7,7 +7,7 @@ import { runChildSession } from "../../src/runs/background/run-child-session.ts"
 import type { ChildSession, ChildSessionFactory } from "../../src/runs/shared/child-session.ts";
 import type { InProcessChildLaunch } from "../../src/runs/shared/child-launch.ts";
 
-const launch = { session: {
+const launch = { capture: { finalDrainHeld: () => false }, session: {
 	cwd: process.cwd(), storage: { kind: "memory" }, extensionPaths: [], ambientExtensions: false,
 	hooks: [], noSkills: true, noContextFiles: true,
 	runtime: { fanoutChild: false, fast: false, depth: 1, waitTool: { enabled: false } },
@@ -303,3 +303,62 @@ for (const mode of ["foreground", "background"] as const) {
 		assert.equal(result.error, "Provider finish_reason: content_filter\nReply text: Blocked by the provider's usage policy.");
 	});
 }
+
+/** Runs a child whose prompt emits a final "Done" reply ending on agent_end, then runs `after` before prompt() returns. */
+function runFinalReply(sessionId: string, abort: () => Promise<void>, after: (emit: Parameters<ChildSession["subscribe"]>[0]) => Promise<void>) {
+	let listener: Parameters<ChildSession["subscribe"]>[0] = () => {};
+	const messages: ChildSession["messages"] = [];
+	const session: ChildSession = {
+		subscribe(handler) { listener = handler; return () => {}; },
+		async prompt() {
+			const message = fauxAssistantMessage("Done");
+			messages.push(message);
+			listener({ type: "agent_start" });
+			listener({ type: "message_end", message });
+			listener({ type: "turn_end" });
+			listener({ type: "agent_end", messages });
+			await after((event) => listener(event));
+		},
+		async steer() {}, async followUp() {}, async dispose() {}, abort,
+		messages, sessionId, modelId: "mock/model",
+	};
+	return runChildSession({
+		factory: { create: async () => session, async dispose() {} }, launch, prompt: "Finish",
+		timeoutMessage: "timed out", appendChildEvent() {}, writeOutputLine() {},
+	});
+}
+
+// A child that stops after its terminal assistant message emits `agent_end` but Pi may
+// never follow it with `agent_settled`; the run still has to settle and publish its reply.
+it("settles and keeps the reply when the child ends on agent_end without agent_settled", { timeout: 10_000 }, async () => {
+	let releasePrompt!: () => void;
+	let aborted = false;
+	let emit!: Parameters<ChildSession["subscribe"]>[0];
+	const result = await runFinalReply("terminal-agent-end-session", async () => {
+		aborted = true;
+		emit({ type: "agent_settled" });
+		releasePrompt();
+	}, (listener) => {
+		emit = listener;
+		// The real child resolves this only once its agent loop is settled or aborted.
+		return new Promise<void>((resolve) => { releasePrompt = resolve; });
+	});
+	assert.equal(result.error, undefined, "a clean terminal stop must not be reported as a settle timeout");
+	assert.equal(result.exitCode, 0);
+	assert.equal(result.finalOutput, "Done");
+	assert.equal(aborted, true, "the re-armed drain must abort the child so its loop can end");
+});
+
+// Pi's order after a final reply: agent_end, then a threshold auto-compaction (a model call that
+// can take seconds), then agent_settled. Ending the run early would cancel the compaction.
+it("lets a compaction that runs after the final agent_end finish", { timeout: 10_000 }, async () => {
+	let aborted = false;
+	const result = await runFinalReply("compaction-after-final-session", async () => { aborted = true; }, async (emit) => {
+		emit({ type: "compaction_start", reason: "threshold" });
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+		emit({ type: "compaction_end", reason: "threshold", willRetry: false, aborted });
+		emit({ type: "agent_settled" });
+	});
+	assert.equal(result.finalOutput, "Done");
+	assert.equal(aborted, false, "the child must not be aborted while it compacts");
+});
