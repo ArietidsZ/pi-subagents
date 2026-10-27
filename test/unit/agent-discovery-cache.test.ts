@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { registerAgent } from "../../src/api/agents.ts";
 import { clearAgentDiscoveryCache, discoverAgentSnapshot, discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
@@ -53,6 +54,41 @@ describe("agent discovery snapshots", () => {
 			else process.env[name] = value;
 		}
 		fs.rmSync(tempRoot, { recursive: true, force: true });
+	});
+
+	it("does not probe ancestor project markers on cold or warm untrusted discovery", (t) => {
+		const markers = [".pi", ".agents", ".git"].map((name) => path.join(tempRoot, name));
+		for (const marker of markers) fs.mkdirSync(marker, { recursive: true });
+		fs.mkdirSync(project, { recursive: true });
+		writeAgent(path.join(home, ".pi", "agent", "agents", "owner-probe.md"), "owner-probe", "User probe");
+		const mutableFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+		const observed: string[] = [];
+		const record = (value: unknown) => {
+			if (typeof value === "string" && markers.includes(path.resolve(value))) observed.push(path.resolve(value));
+		};
+		const stat = mutableFs.statSync;
+		const readdir = mutableFs.readdirSync;
+		try {
+			t.mock.method(mutableFs, "statSync", (...args: Parameters<typeof stat>) => {
+				record(args[0]); return Reflect.apply(stat, mutableFs, args);
+			});
+			t.mock.method(mutableFs, "readdirSync", (...args: Parameters<typeof readdir>) => {
+				record(args[0]); return Reflect.apply(readdir, mutableFs, args);
+			});
+			syncBuiltinESMExports();
+			// Prove namespace bindings observe the instrumentation before testing discovery.
+			fs.statSync(markers[0]); fs.readdirSync(markers[0]);
+			assert.equal(observed.length, 2);
+			observed.length = 0;
+			for (const phase of ["cold", "warm"]) {
+				const snapshot = discoverAgentSnapshot(project, "both", undefined, { includeChains: false, projectTrusted: false });
+				assert.equal(snapshot.effective.agents.some((agent) => agent.name === "owner-probe"), true, phase);
+				assert.deepEqual(observed, [], phase);
+			}
+		} finally {
+			t.mock.restoreAll();
+			syncBuiltinESMExports();
+		}
 	});
 
 	it("keeps effective and all-source projections distinct in one snapshot", () => {
