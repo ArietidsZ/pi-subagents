@@ -1322,7 +1322,7 @@ Answer only from the supplied synthetic text.
 			assert.equal(fs.existsSync(marker), false);
 			assert.equal(mockPi.callCount(), 0);
 
-			const ceiling = registerSubagentCapabilityCeiling({ sessionId: ctx.sessionManager.getSessionFile()!, source: "test", ceiling: { allowedAgents: ["echo"] } });
+			const ceiling = registerSubagentCapabilityCeiling({ sessionId: ctx.sessionManager.getSessionId(), source: "test", ceiling: { allowedAgents: ["echo"] } });
 			try {
 				const denied = await executor.executePublic("ceiling-denied", { workflow: "test.mixed", async: false, capabilityCeiling: { version: 1, allowedAgents: ["reviewer"], sources: ["caller"] } }, new AbortController().signal, undefined, ctx);
 				assert.equal(denied.isError, true);

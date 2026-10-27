@@ -356,7 +356,7 @@ describe("nested control routing", () => {
 			createNestedRun("nested-only");
 			const result = await createExecutor().execute("interrupt", { action: "interrupt" }, new AbortController().signal, undefined, ctx(root));
 			assert.equal(result.isError, true);
-			assert.match(text(result), /No interrupt-capable run found/);
+			assert.match(text(result), /requires id/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

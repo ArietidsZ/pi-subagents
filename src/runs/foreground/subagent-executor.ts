@@ -118,7 +118,7 @@ import { formatHerdrMachineRunnerUnsupported, resolveMachinePlacement } from "..
 import { lookupRunnerLauncher, resolveAgentRunnerLauncher } from "../shared/runner-launcher.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
 import { handleMissionAction, MISSION_ACTIONS } from "../../missions/actions.ts";
-import { attachMissionToLaunchResult, prepareMissionLaunch, writeMissionAsyncBinding, type MissionLaunchBinding } from "../../missions/lifecycle.ts";
+import { attachMissionToLaunchResult, missionAcceptanceStatus, prepareMissionLaunch, writeMissionAsyncBinding, type MissionLaunchBinding } from "../../missions/lifecycle.ts";
 import { MissionNotFoundError, updateMission } from "../../missions/store.ts";
 import type { MissionWorkflowChildUpdate } from "../../missions/types.ts";
 import { createMissionWorkflowState } from "../../missions/workflow-state.ts";
@@ -1042,10 +1042,6 @@ type NestedResumeSourceTarget = {
 };
 type ResumeSourceTarget = AsyncResumeSourceTarget | ForegroundResumeSourceTarget | NestedResumeSourceTarget;
 
-function isAsyncRunNotFound(error: unknown): boolean {
-	return error instanceof Error && error.message.startsWith("Async run not found.");
-}
-
 function isMissingExactAsyncStatusFile(error: unknown, requested: string): boolean {
 	return error instanceof Error && error.message === `Status file not found for async run '${requested}'.`;
 }
@@ -1112,7 +1108,6 @@ function resolveResumeTarget(params: SubagentParamsLike, state: SubagentState, o
 		if (isResumeAmbiguity(foregroundError) && !resumeTargetExact(asyncTarget, requested)) throw foregroundError;
 		return asyncTarget;
 	}
-	if (foregroundError && !isAsyncRunNotFound(asyncError)) throw foregroundError;
 	if (foregroundError) throw foregroundError;
 	if (asyncError) throw asyncError;
 	throw new Error("Run not found. Provide id or runId.");
@@ -1120,29 +1115,17 @@ function resolveResumeTarget(params: SubagentParamsLike, state: SubagentState, o
 
 function getAsyncInterruptTarget(
 	state: SubagentState,
-	runId: string | undefined,
+	runId: string,
 	location?: { asyncDir: string | null; resolvedId?: string },
-	options: { fallbackToNewest?: boolean } = {},
 ): { asyncId: string; asyncDir: string } | undefined {
 	if (location?.asyncDir) {
 		return {
-			asyncId: location.resolvedId ?? runId ?? path.basename(location.asyncDir),
+			asyncId: location.resolvedId ?? runId,
 			asyncDir: location.asyncDir,
 		};
 	}
-	if (runId) {
-		const direct = state.asyncJobs.get(runId);
-		if (direct) return { asyncId: direct.asyncId, asyncDir: direct.asyncDir };
-		if (options.fallbackToNewest === false) return undefined;
-	}
-	let newest: { asyncId: string; asyncDir: string; updatedAt: number } | undefined;
-	for (const job of state.asyncJobs.values()) {
-		if (job.status !== "running") continue;
-		if (!newest || (job.updatedAt ?? 0) > newest.updatedAt) {
-			newest = { asyncId: job.asyncId, asyncDir: job.asyncDir, updatedAt: job.updatedAt ?? 0 };
-		}
-	}
-	return newest ? { asyncId: newest.asyncId, asyncDir: newest.asyncDir } : undefined;
+	const direct = state.asyncJobs.get(runId);
+	return direct ? { asyncId: direct.asyncId, asyncDir: direct.asyncDir } : undefined;
 }
 
 function isStaleExtensionContextError(error: unknown): boolean {
@@ -1226,16 +1209,16 @@ function emitControlNotification(input: {
 
 function interruptAsyncRun(
 	state: SubagentState,
-	runId: string | undefined,
+	runId: string,
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean,
 	location?: { asyncDir: string | null; resolvedId?: string },
 ): AgentToolResult<Details> | null {
-	const target = getAsyncInterruptTarget(state, runId, location, { fallbackToNewest: runId === undefined });
+	const target = getAsyncInterruptTarget(state, runId, location);
 	if (!target) return null;
 	const status = reconcileAsyncRun(target.asyncDir, omitUndefinedProperties({ kill })).status;
 	if (!status || status.state !== "running" || typeof status.pid !== "number") {
 		return {
-			content: [{ type: "text", text: `No running async run with an interrupt-capable pid was found for '${runId ?? "current"}'.` }],
+			content: [{ type: "text", text: `No running async run with an interrupt-capable pid was found for '${runId}'.` }],
 			isError: true,
 			details: { mode: "management", results: [] },
 		};
@@ -1466,7 +1449,7 @@ function appendStepToAsyncChain(input: {
 		worktreeBranchPrefix: input.deps.config.worktreeBranchPrefix,
 		asyncDir: resolved.location.asyncDir,
 		validateOutputBindings: false,
-		capabilityCeiling: intersectSubagentCapabilityCeilings(status.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(asyncCtx.currentSessionId)),
+		capabilityCeiling: intersectSubagentCapabilityCeilings(status.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(asyncCtx.parentSessionId)),
 		requiredExtensions: retainedRequiredExtensions,
 	}));
 	if ("error" in built) {
@@ -1923,7 +1906,7 @@ async function resumeExternalJobFollowUp(input: {
 		availableModels: input.ctx.modelRegistry.getAvailable().map(toModelInfo),
 		outputBaseDir: resolveSingleRunOutputBaseDir(input.deps, artifactsDir, runId),
 		...(input.absoluteDeadlineAt !== undefined ? { absoluteDeadlineAt: input.absoluteDeadlineAt } : {}),
-		capabilityCeiling: resolveCurrentSubagentCapabilityCeiling(currentSessionId),
+		capabilityCeiling: resolveCurrentSubagentCapabilityCeiling(input.ctx.sessionManager.getSessionId() ?? undefined),
 		runFanoutBudget: createRunFanoutBudget(runId, resolveMaxSubagentSpawnsPerRun(input.deps.config.maxSubagentSpawnsPerRun)),
 		activeAsyncCapacity,
 		externalJobFollowUp: { sourceRunId: input.target.runId, sourceStepIndex: input.target.index, parentProviderJobId: externalJob.providerJobId, requestId, requestDigest },
@@ -2222,7 +2205,7 @@ async function resumeAsyncRun(input: {
 			childIntercomTarget: intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(runId, agent, index) : undefined,
 			globalConcurrencyLimit: input.deps.config.globalConcurrencyLimit,
 			runFanoutBudget: createRunFanoutBudget(runId, resolveMaxSubagentSpawnsPerRun(input.deps.config.maxSubagentSpawnsPerRun)),
-			capabilityCeiling: intersectSubagentCapabilityCeilings("capabilityCeiling" in target ? target.capabilityCeiling : undefined, resolveCurrentSubagentCapabilityCeiling(input.deps.state.currentSessionId)),
+			capabilityCeiling: intersectSubagentCapabilityCeilings("capabilityCeiling" in target ? target.capabilityCeiling : undefined, resolveCurrentSubagentCapabilityCeiling(input.ctx.sessionManager.getSessionId() ?? undefined)),
 			thinkingCeiling: target.thinkingCeiling,
 			activeAsyncCapacity,
 		}));
@@ -2391,7 +2374,7 @@ async function resumeAsyncRun(input: {
 		...(input.params.toolBudget !== undefined ? { toolBudget: input.params.toolBudget } : {}),
 		// Recovery descriptors, remembered foreground runs, and current workflow roots
 		// preserve parent authority before the selected agent's descendant ceiling.
-		capabilityCeiling: intersectSubagentCapabilityCeilings(recoveryDescriptor?.capabilityCeiling ?? (target.source === "foreground" || (target.source === "async" && target.mode === "workflow") ? target.capabilityCeiling : undefined), resolveCurrentSubagentCapabilityCeiling(input.deps.state.currentSessionId)),
+		capabilityCeiling: intersectSubagentCapabilityCeilings(recoveryDescriptor?.capabilityCeiling ?? (target.source === "foreground" || (target.source === "async" && target.mode === "workflow") ? target.capabilityCeiling : undefined), resolveCurrentSubagentCapabilityCeiling(input.ctx.sessionManager.getSessionId() ?? undefined)),
 		runFanoutBudget: input.params.runFanoutBudget ?? recoveryDescriptor?.runFanoutBudget ?? createRunFanoutBudget(runId, resolveMaxSubagentSpawnsPerRun(input.deps.config.maxSubagentSpawnsPerRun)),
 		parentWorkflowRunId: input.params.workflowParentRunId,
 		workflowKey: input.params.workflowKey,
@@ -5733,7 +5716,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				const eventsPath = path.join(asyncDir, "events.jsonl");
 				const startedAt = Date.now();
 				const currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
-				const workflowCapabilityCeiling = intersectSubagentCapabilityCeilings(requestParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(currentSessionId));
+				const workflowCapabilityCeiling = intersectSubagentCapabilityCeilings(requestParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(ctx.sessionManager.getSessionId() ?? undefined));
 				const completionOwnerId = deps.state.completionOwnerId ?? currentCompletionOwnerId();
 				deps.state.completionOwnerId = completionOwnerId;
 				const workflowScriptSourceDigest = workflowScriptDigest(requestParams.workflowScript);
@@ -6521,6 +6504,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 								}
 								if (result.details.asyncDir && missionBinding) writeMissionAsyncBinding(result.details.asyncDir, missionBinding);
 								const childStatus = missionWorkflowChildStatus(result);
+								const childAcceptanceStatus = missionAcceptanceStatus(result.details.results);
 								recordMissionWorkflowChild(missionBinding, workflowRunId, key, {
 									status: childStatus,
 									...(child.runId ? { runId: child.runId } : {}),
@@ -6528,6 +6512,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 									...(result.details.results[0]?.sessionFile ? { sessionPath: result.details.results[0].sessionFile } : {}),
 									artifactPaths: child.artifactPaths,
 									...(["completed", "failed"].includes(childStatus) ? { completedAt: new Date().toISOString() } : {}),
+									...(childAcceptanceStatus ? { acceptanceStatus: childAcceptanceStatus } : {}),
 									heartbeat: { status: childStatus, ...(childPhase ? { phase: childPhase } : {}) },
 								});
 								if (result.details.asyncId) {
@@ -6678,7 +6663,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			let lastProgressAt = 0;
 			let workflowProgressClosed = false;
 			const workflowDeadlineAt = timeout === undefined ? undefined : Date.now() + timeout;
-			const workflowCapabilityCeiling = intersectSubagentCapabilityCeilings(requestParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(resolveCurrentSessionId(ctx.sessionManager)));
+			const workflowCapabilityCeiling = intersectSubagentCapabilityCeilings(requestParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(ctx.sessionManager.getSessionId() ?? undefined));
 			const sendWorkflowProgress = () => {
 				if (workflowProgressClosed) return;
 				if (activityTimer) clearTimeout(activityTimer);
@@ -6807,6 +6792,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						const child = workflowChildResult(key, result, preparedChildParams ?? childParams, deps.state);
 						if (child.runId) workflowChildRunIds.set(key, child.runId);
 						const childStatus = missionWorkflowChildStatus(result);
+						const childAcceptanceStatus = missionAcceptanceStatus(result.details.results);
 						recordMissionWorkflowChild(missionBinding, foregroundWorkflowRunId, key, {
 							status: childStatus,
 							...(child.runId ? { runId: child.runId } : {}),
@@ -6814,6 +6800,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							...(result.details.results[0]?.sessionFile ? { sessionPath: result.details.results[0].sessionFile } : {}),
 							artifactPaths: child.artifactPaths,
 							...(["completed", "failed"].includes(childStatus) ? { completedAt: new Date().toISOString() } : {}),
+							...(childAcceptanceStatus ? { acceptanceStatus: childAcceptanceStatus } : {}),
 							heartbeat: { status: childStatus, ...(childPhase ? { phase: childPhase } : {}) },
 						});
 						return child;
@@ -7532,21 +7519,20 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				);
 				if (stopResult) return stopResult;
 				return {
-					content: [{ type: "text", text: "No stoppable async run found in this session." }],
+					content: [{ type: "text", text: `No stoppable async run found for '${targetRunId}'.` }],
 					isError: true,
 					details: { mode: "management", results: [] },
 				};
 			}
 			if (action === "interrupt") {
 				const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
+				if (!targetRunId) return { content: [{ type: "text", text: "action='interrupt' requires id." }], isError: true, details: { mode: "management", results: [] } };
 				let resolved: ResolvedSubagentRunId | undefined;
-				if (targetRunId) {
-					try {
-						resolved = resolveSubagentRunId(targetRunId, omitUndefinedProperties({ state: deps.state, nested: nestedResolutionScopeForExecutor(deps) }));
-					} catch (error) {
-						const message = error instanceof Error ? error.message : String(error);
-						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
-					}
+				try {
+					resolved = resolveSubagentRunId(targetRunId, omitUndefinedProperties({ state: deps.state, nested: nestedResolutionScopeForExecutor(deps) }));
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
 				}
 				if (resolved?.kind === "nested") return interruptNestedRun(resolved);
 				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
@@ -7574,7 +7560,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				);
 				if (asyncInterruptResult) return asyncInterruptResult;
 				return {
-					content: [{ type: "text", text: "No interrupt-capable run found in this session." }],
+					content: [{ type: "text", text: `No interrupt-capable run found for '${targetRunId}'.` }],
 					isError: true,
 					details: { mode: "management", results: [] },
 				};
@@ -7590,7 +7576,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				...ctx,
 				cwd: requestCwd,
 				config: deps.config,
-				currentSessionId: deps.state.currentSessionId ?? ctx.sessionManager.getSessionId() ?? undefined,
+				piSessionId: ctx.sessionManager.getSessionId() ?? undefined,
 				discoverAgentsAll: deps.discoverAgentsAll,
 				runtimeAgentOwner: deps.pi,
 				onAgentsChanged: deps.onAgentsChanged,
@@ -7716,7 +7702,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		// Check before pruner/session preparation, then recheck immediately before each fork
 		// because the session capability ceiling can tighten while preparation awaits.
 		const launchCapabilityCeiling = () => intersectSubagentCapabilityCeilings(
-			intersectSubagentCapabilityCeilings(effectiveParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(requestSessionId)),
+			intersectSubagentCapabilityCeilings(effectiveParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(requestPiSessionId)),
 			deps.childRuntime?.capabilityCeiling,
 		);
 		const assertLaunchableAgentsAllowedBeforeFork = (): void => {
@@ -8007,7 +7993,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			scopedModelIds: scopedModelIdsFromContext(ctx),
 			parentSessionId: requestSessionId,
 			parentPiSessionId: requestPiSessionId,
-			capabilityCeiling: intersectSubagentCapabilityCeilings(effectiveParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(requestSessionId)),
+			capabilityCeiling: intersectSubagentCapabilityCeilings(effectiveParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(requestPiSessionId)),
 			runFanoutBudget,
 			topLevelAsyncCapacityEligible,
 			activeAsyncCapacity,

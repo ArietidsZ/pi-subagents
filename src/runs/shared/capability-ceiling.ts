@@ -170,8 +170,9 @@ export function resolveSubagentCapabilityCeiling(sessionId: string | undefined, 
 	return intersectSubagentCapabilityCeilings(inherited, ...active);
 }
 
-export function resolveCurrentSubagentCapabilityCeiling(sessionId: string | undefined): ResolvedSubagentCapabilityCeiling | undefined {
-	return resolveSubagentCapabilityCeiling(sessionId, undefined);
+/** Ceilings are registered under `ctx.sessionManager.getSessionId()`; pass that id, never the session file path. */
+export function resolveCurrentSubagentCapabilityCeiling(piSessionId: string | undefined): ResolvedSubagentCapabilityCeiling | undefined {
+	return resolveSubagentCapabilityCeiling(piSessionId, undefined);
 }
 
 export function isAgentAllowedByCapabilityCeiling(agentName: string, ceiling: ResolvedSubagentCapabilityCeiling | undefined): boolean {

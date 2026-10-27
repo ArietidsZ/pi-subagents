@@ -472,7 +472,8 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 	const requireSessionFile = options.requireSessionFile ?? true;
 	const location = resolveAsyncRunLocation(params, asyncDirRoot, resultsDir);
 	if (!location.asyncDir && !location.resultPath) {
-		throw new Error("Async run not found. Provide id or dir.");
+		const requested = params.id ?? params.runId;
+		throw new Error(requested ? `Async run not found for '${requested}'.` : "Async run not found. Provide id or dir.");
 	}
 
 	const reconciliation = location.asyncDir
@@ -587,6 +588,10 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 	const managedWorktreeCwd = location.asyncDir
 		? resolveRetainedWorktreeCwd(parallelHandoffPath(location.asyncDir), runId, index)
 		: undefined;
+	const statusWorktreePath = statusSteps[index]?.worktreePath;
+	if (!managedWorktreeCwd && statusWorktreePath) {
+		throw new Error(`Async run '${runId}' child ${index} ran in managed worktree ${statusWorktreePath}, but its handoff has no resumable record yet. Retry after the run settles; if it already ended, inspect ${parallelHandoffPath(location.asyncDir!)}.`);
+	}
 	const resumeCwd = validateResumeCwd(runId, managedWorktreeCwd ?? status?.cwd ?? result?.cwd ?? recoveryDescriptor?.cwd);
 
 	return {

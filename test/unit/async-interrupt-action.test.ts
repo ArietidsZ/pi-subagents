@@ -195,9 +195,25 @@ describe("async interrupt action", () => {
 				const result = await executorWithKill(state, () => true)
 					.execute("interrupt", { action: "interrupt", id: "missing-exact-worker", ...extra }, new AbortController().signal, undefined, ctx());
 				assert.equal(result.isError, true);
+				assert.match(text(result), /'missing-exact-worker'/);
 				assert.equal(fs.existsSync(interruptRequestPath(asyncDir)), false);
 				assert.equal(JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf8")).state, "running");
 			}
+		} finally {
+			cleanup(runId, asyncDir);
+		}
+	});
+
+	it("refuses a bare interrupt instead of picking a running job", async () => {
+		const state = createState();
+		const runId = `bare-interrupt-${Date.now().toString(36)}`;
+		const asyncDir = createRunningAsync(state, runId);
+		try {
+			const result = await executorWithKill(state, () => true)
+				.execute("interrupt", { action: "interrupt" }, new AbortController().signal, undefined, ctx());
+			assert.equal(result.isError, true);
+			assert.equal(text(result), "action='interrupt' requires id.");
+			assert.equal(fs.existsSync(interruptRequestPath(asyncDir)), false);
 		} finally {
 			cleanup(runId, asyncDir);
 		}
@@ -1408,7 +1424,7 @@ describe("async interrupt action", () => {
 				.execute("stop", { action: "stop", id: "missing-run" }, new AbortController().signal, undefined, ctx());
 
 			assert.equal(result.isError, true);
-			assert.match(text(result), /Run not found|No stoppable async run found in this session/);
+			assert.match(text(result), /No stoppable async run found for 'missing-run'/);
 			assert.equal(fs.existsSync(path.join(asyncDir, "control", "stop.json")), false);
 		} finally {
 			cleanup(runId, asyncDir);
