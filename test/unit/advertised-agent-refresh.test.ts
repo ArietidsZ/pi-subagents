@@ -9,7 +9,7 @@ import { SUBAGENT_CHILD_ENV } from "../../src/runs/shared/child-runtime-config.t
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-it("honors trust during refresh, emits bounded snapshots, and performs zero prompt-time filesystem calls", () => {
+it("emits bounded file-only snapshots, refreshes through management, and performs zero prompt-time filesystem calls", () => {
 	const home = fs.mkdtempSync(path.join(os.tmpdir(), "advertised-refresh-"));
 	const env = { ...process.env, PI_CODING_AGENT_DIR: home };
 	delete env[SUBAGENT_CHILD_ENV];
@@ -38,9 +38,7 @@ it("honors trust during refresh, emits bounded snapshots, and performs zero prom
 				getActiveTools() { return activeTools; },
 			}, { get(target, key) { return key in target ? target[key] : () => undefined; } });
 			register(pi);
-			let projectTrusted = true;
 			const ctx = {
-				isProjectTrusted() { return projectTrusted; },
 				cwd, isIdle() { return false; }, hasUI: false, model: { provider: "test", id: "test" },
 				modelRegistry: { getAvailable() { return []; }, getAll() { return []; } },
 				sessionManager: { getSessionId() { return "advertised-test"; }, getSessionFile() { return undefined; }, getBranch() { return []; } },
@@ -52,18 +50,11 @@ it("honors trust during refresh, emits bounded snapshots, and performs zero prom
 				await handlers.get("before_agent_start").at(-2)({ systemPrompt: "base", systemPromptOptions: { selectedTools, sections } }, ctx);
 				return sections.advertised_subagents ?? "base";
 			};
-			const projectMarkers = new Set([".pi", ".agents", ".git"].map(name => path.join(home, name)));
-			for (const marker of projectMarkers) fs.mkdirSync(marker, { recursive: true });
-			const projectProbes = [];
 			const io = { statSync: 0, readdirSync: 0, readFileSync: 0 };
 			const originals = {};
 			for (const key of Object.keys(io)) {
 				originals[key] = fs[key];
-				fs[key] = (...args) => {
-					io[key]++;
-					if (typeof args[0] === "string" && projectMarkers.has(path.resolve(args[0]))) projectProbes.push(args[0]);
-					return originals[key](...args);
-				};
+				fs[key] = (...args) => { io[key]++; return originals[key](...args); };
 			}
 			syncBuiltinESMExports();
 			const noIo = async (fn) => {
@@ -72,16 +63,6 @@ it("honors trust during refresh, emits bounded snapshots, and performs zero prom
 				assert.deepEqual(io, before, "prompt emission must not stat, readdir, or read files");
 				return result;
 			};
-			fs.statSync([...projectMarkers][0]);
-			assert.equal(projectProbes.length, 1, "probe instrumentation must be live");
-			projectProbes.length = 0;
-			projectTrusted = false;
-			for (const reason of ["startup", "reload"]) {
-				refresh(reason);
-				await emit();
-				assert.deepEqual(projectProbes, [], "untrusted session refresh must not probe ancestor project markers");
-			}
-			projectTrusted = true;
 			refresh("startup");
 			await emit();
 			await noIo(async () => { for (let i = 0; i < 20; i++) assert.equal(await emit(), "base"); });

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- In a project you have not trusted, agent discovery no longer reads the project's `.git`, `.pi` and `.agents` folders on every call. It already ignored their content, but it still listed them to decide when to refresh, so ordinary git activity in the repository made it rebuild its cache. Thanks to [@ArietidsZ](https://github.com/ArietidsZ). (#3080)
+
 ## [0.83.0] - 2026-10-25
 
 ### Highlights
