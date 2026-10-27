@@ -5,6 +5,7 @@
 ### Fixed
 
 - In a project you have not trusted, agent discovery no longer reads the project's `.git`, `.pi` and `.agents` folders on every call. It already ignored their content, but it still listed them to decide when to refresh, so ordinary git activity in the repository made it rebuild its cache. Thanks to [@ArietidsZ](https://github.com/ArietidsZ). (#3080)
+- A blank line inside an indented frontmatter block, such as an `external-cli` runner whose script argument has an empty line, cut the value off at that line and dropped the rest of the agent's settings below it. The whole block is now read. Lists and blocks that used to stop at a blank line, such as `tools:`, now include their later entries, so an agent can get tools it did not get before. `|` and `>` blocks are unchanged. Thanks to [@jbachorik](https://github.com/jbachorik). (#3089)
 
 ## [0.83.0] - 2026-10-25
 
