@@ -472,7 +472,8 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 	const requireSessionFile = options.requireSessionFile ?? true;
 	const location = resolveAsyncRunLocation(params, asyncDirRoot, resultsDir);
 	if (!location.asyncDir && !location.resultPath) {
-		throw new Error("Async run not found. Provide id or dir.");
+		const requested = params.id ?? params.runId;
+		throw new Error(requested ? `Async run not found for '${requested}'.` : "Async run not found. Provide id or dir.");
 	}
 
 	const reconciliation = location.asyncDir

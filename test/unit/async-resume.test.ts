@@ -714,6 +714,17 @@ describe("async resume lookup", () => {
 		}
 	});
 
+	it("names the requested id when no async run matches it", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-unknown-"));
+		try {
+			const deps = { asyncDirRoot: path.join(root, "runs"), resultsDir: path.join(root, "results") };
+			assert.throws(() => resolveAsyncResumeTarget({ id: "nonexistent-probe-1234" }, deps), /^Error: Async run not found for 'nonexistent-probe-1234'\.$/);
+			assert.throws(() => resolveAsyncResumeTarget({}, deps), /^Error: Async run not found\. Provide id or dir\.$/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects non-jsonl session files before reviving", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-session-"));
 		try {

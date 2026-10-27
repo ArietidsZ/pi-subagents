@@ -1042,10 +1042,6 @@ type NestedResumeSourceTarget = {
 };
 type ResumeSourceTarget = AsyncResumeSourceTarget | ForegroundResumeSourceTarget | NestedResumeSourceTarget;
 
-function isAsyncRunNotFound(error: unknown): boolean {
-	return error instanceof Error && error.message.startsWith("Async run not found.");
-}
-
 function isMissingExactAsyncStatusFile(error: unknown, requested: string): boolean {
 	return error instanceof Error && error.message === `Status file not found for async run '${requested}'.`;
 }
@@ -1112,7 +1108,6 @@ function resolveResumeTarget(params: SubagentParamsLike, state: SubagentState, o
 		if (isResumeAmbiguity(foregroundError) && !resumeTargetExact(asyncTarget, requested)) throw foregroundError;
 		return asyncTarget;
 	}
-	if (foregroundError && !isAsyncRunNotFound(asyncError)) throw foregroundError;
 	if (foregroundError) throw foregroundError;
 	if (asyncError) throw asyncError;
 	throw new Error("Run not found. Provide id or runId.");
@@ -1120,29 +1115,17 @@ function resolveResumeTarget(params: SubagentParamsLike, state: SubagentState, o
 
 function getAsyncInterruptTarget(
 	state: SubagentState,
-	runId: string | undefined,
+	runId: string,
 	location?: { asyncDir: string | null; resolvedId?: string },
-	options: { fallbackToNewest?: boolean } = {},
 ): { asyncId: string; asyncDir: string } | undefined {
 	if (location?.asyncDir) {
 		return {
-			asyncId: location.resolvedId ?? runId ?? path.basename(location.asyncDir),
+			asyncId: location.resolvedId ?? runId,
 			asyncDir: location.asyncDir,
 		};
 	}
-	if (runId) {
-		const direct = state.asyncJobs.get(runId);
-		if (direct) return { asyncId: direct.asyncId, asyncDir: direct.asyncDir };
-		if (options.fallbackToNewest === false) return undefined;
-	}
-	let newest: { asyncId: string; asyncDir: string; updatedAt: number } | undefined;
-	for (const job of state.asyncJobs.values()) {
-		if (job.status !== "running") continue;
-		if (!newest || (job.updatedAt ?? 0) > newest.updatedAt) {
-			newest = { asyncId: job.asyncId, asyncDir: job.asyncDir, updatedAt: job.updatedAt ?? 0 };
-		}
-	}
-	return newest ? { asyncId: newest.asyncId, asyncDir: newest.asyncDir } : undefined;
+	const direct = state.asyncJobs.get(runId);
+	return direct ? { asyncId: direct.asyncId, asyncDir: direct.asyncDir } : undefined;
 }
 
 function isStaleExtensionContextError(error: unknown): boolean {
@@ -1226,16 +1209,16 @@ function emitControlNotification(input: {
 
 function interruptAsyncRun(
 	state: SubagentState,
-	runId: string | undefined,
+	runId: string,
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean,
 	location?: { asyncDir: string | null; resolvedId?: string },
 ): AgentToolResult<Details> | null {
-	const target = getAsyncInterruptTarget(state, runId, location, { fallbackToNewest: runId === undefined });
+	const target = getAsyncInterruptTarget(state, runId, location);
 	if (!target) return null;
 	const status = reconcileAsyncRun(target.asyncDir, omitUndefinedProperties({ kill })).status;
 	if (!status || status.state !== "running" || typeof status.pid !== "number") {
 		return {
-			content: [{ type: "text", text: `No running async run with an interrupt-capable pid was found for '${runId ?? "current"}'.` }],
+			content: [{ type: "text", text: `No running async run with an interrupt-capable pid was found for '${runId}'.` }],
 			isError: true,
 			details: { mode: "management", results: [] },
 		};
@@ -7532,21 +7515,20 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				);
 				if (stopResult) return stopResult;
 				return {
-					content: [{ type: "text", text: "No stoppable async run found in this session." }],
+					content: [{ type: "text", text: `No stoppable async run found for '${targetRunId}'.` }],
 					isError: true,
 					details: { mode: "management", results: [] },
 				};
 			}
 			if (action === "interrupt") {
 				const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
+				if (!targetRunId) return { content: [{ type: "text", text: "action='interrupt' requires id." }], isError: true, details: { mode: "management", results: [] } };
 				let resolved: ResolvedSubagentRunId | undefined;
-				if (targetRunId) {
-					try {
-						resolved = resolveSubagentRunId(targetRunId, omitUndefinedProperties({ state: deps.state, nested: nestedResolutionScopeForExecutor(deps) }));
-					} catch (error) {
-						const message = error instanceof Error ? error.message : String(error);
-						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
-					}
+				try {
+					resolved = resolveSubagentRunId(targetRunId, omitUndefinedProperties({ state: deps.state, nested: nestedResolutionScopeForExecutor(deps) }));
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
 				}
 				if (resolved?.kind === "nested") return interruptNestedRun(resolved);
 				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
@@ -7574,7 +7556,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				);
 				if (asyncInterruptResult) return asyncInterruptResult;
 				return {
-					content: [{ type: "text", text: "No interrupt-capable run found in this session." }],
+					content: [{ type: "text", text: `No interrupt-capable run found for '${targetRunId}'.` }],
 					isError: true,
 					details: { mode: "management", results: [] },
 				};
