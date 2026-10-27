@@ -807,7 +807,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		const activeRuns = config.activeRunsPrompt === true ? buildActiveRunsSection(state.asyncJobs.values(), sessionId) : undefined;
 		if (activeRuns) event.systemPromptOptions.sections.active_subagents = activeRuns;
 		if (!event.systemPromptOptions.selectedTools.includes("subagent")) return;
-		const catalog = buildAdvertisedAgentCatalog(advertisedAgents, resolveCurrentSubagentCapabilityCeiling(sessionId), recordedPromptSection(pi, "advertised_subagents"));
+		const catalog = buildAdvertisedAgentCatalog(advertisedAgents, resolveCurrentSubagentCapabilityCeiling(ctx.sessionManager.getSessionId() ?? undefined), recordedPromptSection(pi, "advertised_subagents"));
 		if (catalog) event.systemPromptOptions.sections.advertised_subagents = catalog;
 	});
 
@@ -1271,7 +1271,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		hasPendingSupervisorRequest: () => [...supervisorChannel.pending.values()].some((request) => request.expectsReply),
 		advertisedPrompt: async () => {
 			await waitForAdvertisement();
-			return buildAdvertisedAgentPrompt(advertisedAgents, resolveCurrentSubagentCapabilityCeiling(state.currentSessionId ?? undefined));
+			return buildAdvertisedAgentPrompt(advertisedAgents, resolveCurrentSubagentCapabilityCeiling(state.supervisorOwnerSessionId ?? undefined));
 		},
 	});
 }

@@ -344,7 +344,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 					getApiKeyAndHeaders: async () => { registryCalls.push("getApiKeyAndHeaders"); return {}; },
 				},
 			};
-			const handle = registerSubagentCapabilityCeiling({ sessionId: parentSessionFile, source: "plan-mode", ceiling: { allowedAgents: ["second"] } });
+			const handle = registerSubagentCapabilityCeiling({ sessionId: manager.getSessionId(), source: "plan-mode", ceiling: { allowedAgents: ["second"] } });
 			try {
 				const result = await executor.execute("id", { agent: "echo", task: "test", context: "fork" }, new AbortController().signal, undefined, ctx);
 				assert.equal(result.isError, true);
@@ -365,7 +365,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		it(`denies a ceiling-restricted agent before any fork with ${scenario.name}`, async () => {
 			const parentSessionFile = path.join(tempDir, "parent.jsonl");
 			const { manager, openedPaths } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
-			const handle = registerSubagentCapabilityCeiling({ sessionId: parentSessionFile, source: "plan-mode", ceiling: { allowedAgents: ["echo"] } });
+			const handle = registerSubagentCapabilityCeiling({ sessionId: manager.getSessionId(), source: "plan-mode", ceiling: { allowedAgents: ["echo"] } });
 			try {
 				const result = await makeExecutor().execute("id", { ...scenario.params, context: "fork" }, new AbortController().signal, undefined, { ...makeCtx(manager), hasUI: scenario.hasUI });
 				assert.equal(result.isError, true);
@@ -393,7 +393,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 	it("does not deny a ceiling-restricted dynamic template that fork preflight never prepares", async () => {
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const { manager, openedPaths } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
-		const handle = registerSubagentCapabilityCeiling({ sessionId: parentSessionFile, source: "plan-mode", ceiling: { allowedAgents: ["echo"] } });
+		const handle = registerSubagentCapabilityCeiling({ sessionId: manager.getSessionId(), source: "plan-mode", ceiling: { allowedAgents: ["echo"] } });
 		try {
 			const result = await makeExecutor().execute("id", {
 				context: "fork",

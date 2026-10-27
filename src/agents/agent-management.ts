@@ -43,7 +43,7 @@ import { listExternalJobProviders } from "../api/external-job-provider.ts";
 
 type ManagementAction = "list" | "get" | "models" | "create" | "update" | "delete" | "eject" | "disable" | "enable" | "reset";
 type ManagementScope = "user" | "project";
-type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry"> & { model?: ExtensionContext["model"]; config?: ExtensionConfig; currentSessionId?: string; runtimeAgentOwner?: RuntimeAgentOwner; onAgentsChanged?: () => void; discoverAgentsAll?: typeof discoverAgentsAll };
+type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry"> & { model?: ExtensionContext["model"]; config?: ExtensionConfig; piSessionId?: string; runtimeAgentOwner?: RuntimeAgentOwner; onAgentsChanged?: () => void; discoverAgentsAll?: typeof discoverAgentsAll };
 
 function discoverCatalog(ctx: ManagementContext, cwd: string = ctx.cwd, provider?: string): AgentDiscoveryAllResult {
 	return (ctx.discoverAgentsAll ?? discoverAgentsAll)(cwd, provider);
@@ -975,7 +975,7 @@ export function handleList(params: ManagementParams, ctx: ManagementContext): Ag
 	let scopedAgents = effectiveAgentsForScope(scope, d, ctx.runtimeAgentOwner, ctx.model?.provider);
 	scopedAgents = scopedAgents
 		.sort((a, b) => a.name.localeCompare(b.name));
-	const capabilityCeiling = resolveCurrentSubagentCapabilityCeiling(ctx.currentSessionId);
+	const capabilityCeiling = resolveCurrentSubagentCapabilityCeiling(ctx.piSessionId);
 	const visibleAgents = scopedAgents.filter((a) => !a.disabled);
 	const agents = visibleAgents.filter((a) => isAgentAllowedByCapabilityCeiling(a.name, capabilityCeiling));
 	const restrictedAgents = visibleAgents.filter((a) => !isAgentAllowedByCapabilityCeiling(a.name, capabilityCeiling));
@@ -1033,7 +1033,7 @@ function handleModels(params: ManagementParams, ctx: ManagementContext): AgentTo
 	const availableModels = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const currentModel = ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined;
 	const preferredProvider = ctx.model?.provider;
-	const capabilityCeiling = resolveCurrentSubagentCapabilityCeiling(ctx.currentSessionId);
+	const capabilityCeiling = resolveCurrentSubagentCapabilityCeiling(ctx.piSessionId);
 
 	let selectedAgents = effectiveAgents;
 	if (requestedAgent) {

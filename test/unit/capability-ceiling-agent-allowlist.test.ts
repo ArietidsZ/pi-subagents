@@ -53,7 +53,7 @@ describe("capability ceiling agent allowlist", () => {
 		const sessionId = `allowlist-list-${Date.now()}-${Math.random()}`;
 		const handle = registerSubagentCapabilityCeiling({ sessionId, source: "plan-mode", ceiling: { allowedAgents: ["reviewer"] } });
 		try {
-			const result = handleList({}, { cwd: process.cwd(), currentSessionId: sessionId, modelRegistry: { getAvailable: () => [] } });
+			const result = handleList({}, { cwd: process.cwd(), piSessionId: sessionId, modelRegistry: { getAvailable: () => [] } });
 			const text = result.content[0]?.text ?? "";
 			assert.match(text, /Executable agents:/);
 			assert.match(text, /- reviewer /);
