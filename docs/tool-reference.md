@@ -344,7 +344,7 @@ subagent({ action: "doctor" })
 - `view: "transcript"` tails the selected run's live `output-<index>.log` or persisted session transcript, with `lines` capped at 500.
 - Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands.
 - Inside child-safe fanout mode, bare `status` requires an id when no local foreground run is active, so children cannot enumerate unrelated top-level async runs.
-- `interrupt` requires an id, like `stop`, `steer`, and `resume`; it never picks a run for you. A nested run takes its nested id.
+- `interrupt` requires an id, like `stop`, `steer`, and `resume`; for a nested run, pass its nested id.
 
 ### Command controls
 

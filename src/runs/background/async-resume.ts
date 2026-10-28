@@ -586,12 +586,8 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 		? intersectSubagentCapabilityCeilings(status?.admissionCapabilityCeiling, result?.admissionCapabilityCeiling)
 		: intersectSubagentCapabilityCeilings(status?.capabilityCeiling, statusSteps[index]?.capabilityCeiling, result?.capabilityCeiling, resultSteps[index]?.capabilityCeiling);
 	const managedWorktreeCwd = location.asyncDir
-		? resolveRetainedWorktreeCwd(parallelHandoffPath(location.asyncDir), runId, index)
+		? resolveRetainedWorktreeCwd(parallelHandoffPath(location.asyncDir), runId, index, statusSteps[index]?.worktreePath)
 		: undefined;
-	const statusWorktreePath = statusSteps[index]?.worktreePath;
-	if (!managedWorktreeCwd && statusWorktreePath) {
-		throw new Error(`Async run '${runId}' child ${index} ran in managed worktree ${statusWorktreePath}, but its handoff has no resumable record yet. Retry after the run settles; if it already ended, inspect ${parallelHandoffPath(location.asyncDir!)}.`);
-	}
 	const resumeCwd = validateResumeCwd(runId, managedWorktreeCwd ?? status?.cwd ?? result?.cwd ?? recoveryDescriptor?.cwd);
 
 	return {

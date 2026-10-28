@@ -2016,7 +2016,7 @@ export interface AsyncStatus {
 		label?: string;
 		workflowKey?: string;
 		lane?: WorkflowLaneMetadata;
-		/** Worktree path copied at setup. The handoff stays authoritative for the cwd; resume refuses a child that has this but no handoff record. */
+		/** Worktree path copied at setup; the handoff stays authoritative for the cwd. */
 		worktreePath?: string;
 		/** Display-only branch copied at launch; handoff remains authoritative. */
 		branch?: string;

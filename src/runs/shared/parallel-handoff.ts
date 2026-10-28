@@ -180,14 +180,16 @@ export async function protectRetainedWorktreeForResume(manifestPath: string, run
 	}), { signal }));
 }
 
-export function resolveRetainedWorktreeCwd(manifestPath: string, runId: string, childIndex: number): string | undefined {
+export function resolveRetainedWorktreeCwd(manifestPath: string, runId: string, childIndex: number, recordedWorktreePath?: string): string | undefined {
 	const manifest = readParallelHandoffManifest(manifestPath);
-	if (!manifest) return undefined;
-	if (manifest.runId !== runId) throw new Error(`Managed worktree handoff belongs to run '${manifest.runId}', not '${runId}'.`);
-	const match = manifest.groups
+	if (manifest && manifest.runId !== runId) throw new Error(`Managed worktree handoff belongs to run '${manifest.runId}', not '${runId}'.`);
+	const match = manifest?.groups
 		.flatMap((group) => group.children.map((child) => ({ group, child })))
 		.find(({ child }) => child.index === childIndex);
-	if (!match) return undefined;
+	if (!manifest || !match) {
+		if (recordedWorktreePath) throw new Error(`Async run '${runId}' child ${childIndex} ran in managed worktree ${recordedWorktreePath}, but its handoff has no resumable record yet. Retry after the run settles; if it already ended, inspect ${manifestPath}.`);
+		return undefined;
+	}
 	const cleanup = match.group.cleanup.tasks.find((task) => task.index === match.child.taskIndex);
 	if (!cleanup) throw new Error(`Async run '${runId}' child ${childIndex} has no managed worktree cleanup record.`);
 	const relativeCwd = path.relative(resolveExistingPath(match.group.repoRoot), resolveExistingPath(manifest.cwd));

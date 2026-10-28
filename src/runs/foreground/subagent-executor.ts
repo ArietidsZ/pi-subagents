@@ -1113,21 +1113,6 @@ function resolveResumeTarget(params: SubagentParamsLike, state: SubagentState, o
 	throw new Error("Run not found. Provide id or runId.");
 }
 
-function getAsyncInterruptTarget(
-	state: SubagentState,
-	runId: string,
-	location?: { asyncDir: string | null; resolvedId?: string },
-): { asyncId: string; asyncDir: string } | undefined {
-	if (location?.asyncDir) {
-		return {
-			asyncId: location.resolvedId ?? runId,
-			asyncDir: location.asyncDir,
-		};
-	}
-	const direct = state.asyncJobs.get(runId);
-	return direct ? { asyncId: direct.asyncId, asyncDir: direct.asyncDir } : undefined;
-}
-
 function isStaleExtensionContextError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
 	return /extension ctx is stale|stale after session replacement or reload/i.test(error.message);
@@ -1213,7 +1198,7 @@ function interruptAsyncRun(
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean,
 	location?: { asyncDir: string | null; resolvedId?: string },
 ): AgentToolResult<Details> | null {
-	const target = getAsyncInterruptTarget(state, runId, location);
+	const target = location?.asyncDir ? { asyncId: location.resolvedId ?? runId, asyncDir: location.asyncDir } : state.asyncJobs.get(runId);
 	if (!target) return null;
 	const status = reconcileAsyncRun(target.asyncDir, omitUndefinedProperties({ kill })).status;
 	if (!status || status.state !== "running" || typeof status.pid !== "number") {
@@ -6504,7 +6489,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 								}
 								if (result.details.asyncDir && missionBinding) writeMissionAsyncBinding(result.details.asyncDir, missionBinding);
 								const childStatus = missionWorkflowChildStatus(result);
-								const childAcceptanceStatus = missionAcceptanceStatus(result.details.results);
 								recordMissionWorkflowChild(missionBinding, workflowRunId, key, {
 									status: childStatus,
 									...(child.runId ? { runId: child.runId } : {}),
@@ -6512,7 +6496,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 									...(result.details.results[0]?.sessionFile ? { sessionPath: result.details.results[0].sessionFile } : {}),
 									artifactPaths: child.artifactPaths,
 									...(["completed", "failed"].includes(childStatus) ? { completedAt: new Date().toISOString() } : {}),
-									...(childAcceptanceStatus ? { acceptanceStatus: childAcceptanceStatus } : {}),
+									acceptanceStatus: missionAcceptanceStatus(result.details.results),
 									heartbeat: { status: childStatus, ...(childPhase ? { phase: childPhase } : {}) },
 								});
 								if (result.details.asyncId) {
@@ -6792,7 +6776,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						const child = workflowChildResult(key, result, preparedChildParams ?? childParams, deps.state);
 						if (child.runId) workflowChildRunIds.set(key, child.runId);
 						const childStatus = missionWorkflowChildStatus(result);
-						const childAcceptanceStatus = missionAcceptanceStatus(result.details.results);
 						recordMissionWorkflowChild(missionBinding, foregroundWorkflowRunId, key, {
 							status: childStatus,
 							...(child.runId ? { runId: child.runId } : {}),
@@ -6800,7 +6783,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							...(result.details.results[0]?.sessionFile ? { sessionPath: result.details.results[0].sessionFile } : {}),
 							artifactPaths: child.artifactPaths,
 							...(["completed", "failed"].includes(childStatus) ? { completedAt: new Date().toISOString() } : {}),
-							...(childAcceptanceStatus ? { acceptanceStatus: childAcceptanceStatus } : {}),
+							acceptanceStatus: missionAcceptanceStatus(result.details.results),
 							heartbeat: { status: childStatus, ...(childPhase ? { phase: childPhase } : {}) },
 						});
 						return child;

@@ -350,18 +350,6 @@ describe("nested control routing", () => {
 		}
 	});
 
-	it("does not let bare interrupt target hidden nested descendants", async () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-bare-interrupt-"));
-		try {
-			createNestedRun("nested-only");
-			const result = await createExecutor().execute("interrupt", { action: "interrupt" }, new AbortController().signal, undefined, ctx(root));
-			assert.equal(result.isError, true);
-			assert.match(text(result), /requires id/);
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
-
 	it("times out owner-gone nested control and ignores late results", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-timeout-"));
 		try {

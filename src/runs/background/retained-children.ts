@@ -65,9 +65,7 @@ function childResumability(run: AsyncRunSummary, step: AsyncRunSummary["steps"][
 	}
 	let requiredCwd: string | undefined;
 	try {
-		const retainedCwd = resolveRetainedWorktreeCwd(parallelHandoffPath(run.asyncDir), run.id, step.index);
-		if (!retainedCwd && step.worktreePath) return { state: "not-resumable", reason: `managed worktree handoff has no resumable record yet: ${step.worktreePath}` };
-		requiredCwd = retainedCwd ?? recoveryDescriptor.cwd ?? run.cwd;
+		requiredCwd = resolveRetainedWorktreeCwd(parallelHandoffPath(run.asyncDir), run.id, step.index, step.worktreePath) ?? recoveryDescriptor.cwd ?? run.cwd;
 		if (!requiredCwd || !fs.statSync(requiredCwd).isDirectory()) return { state: "not-resumable", reason: `required cwd is missing: ${requiredCwd ?? "unknown"}` };
 	} catch (error) {
 		return { state: "not-resumable", reason: `resume dependency unavailable: ${error instanceof Error ? error.message : String(error)}` };

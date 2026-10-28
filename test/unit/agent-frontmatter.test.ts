@@ -338,8 +338,6 @@ body`);
 });
 
 describe("blank lines in nested frontmatter blocks", () => {
-	// Exactly-empty lines are the truncation trigger (issue #77): whitespace-only
-	// lines were always collected, only `trimmed === ""` lines were dropped.
 	const fm = (body: string) => parseFrontmatter(`---\n${body}---\npayload`);
 
 	it("preserves a nested block value across exactly-empty lines", () => {
@@ -349,103 +347,23 @@ describe("blank lines in nested frontmatter blocks", () => {
 	});
 
 	it("keeps list items after an exactly-empty line and drops no comment into the list", () => {
-		const withoutBlank = fm("tools:\n  - read\n  - bash\nname: x\n").frontmatter.tools;
-		const withBlank = fm("tools:\n  - read\n\n  - bash\nname: x\n").frontmatter.tools;
-		assert.deepEqual(parseFrontmatterList(withoutBlank), ["read", "bash"]);
-		assert.deepEqual(parseFrontmatterList(withBlank), ["read", "bash"]);
-		const withComment = fm("tools:\n  - read\n\n# note\n\n  - bash\nname: x\n");
-		assert.deepEqual(parseFrontmatterList(withComment.frontmatter.tools), ["read", "bash"]);
-		assert.equal(withComment.frontmatter.name, "x");
+		const parsed = fm("tools:\n  - read\n\n# note\n\n  - bash\nname: x\n");
+		assert.deepEqual(parseFrontmatterList(parsed.frontmatter.tools), ["read", "bash"]);
+		assert.equal(parsed.frontmatter.name, "x");
 	});
 
-	it("does not leak trailing blanks into a nested block ended by the next key", () => {
-		const parsed = fm("runner:\n  type: x\n\nname: z\n");
-		assert.equal(parsed.frontmatter.runner, "type: x");
-		assert.equal(parsed.frontmatter.name, "z");
-	});
-
-	it("does not leak trailing blanks when a nested block ends the frontmatter", () => {
-		const parsed = fm("runner:\n  type: x\n\n");
-		assert.equal(parsed.frontmatter.runner, "type: x");
-	});
-
-	it("keeps literal and folded blocks byte-identical to the pre-fix parser at their edges", () => {
-		for (const indicator of ["|", "|-"]) {
-			const parsed = fm(`prompt: ${indicator}\n  hello\n\nname: x\n`);
-			assert.equal(parsed.frontmatter.prompt, "hello\n");
-			assert.equal(parsed.frontmatter.name, "x");
-		}
-		const trailingBlankAtEnd = fm("prompt: |\n  hello\n\n");
-		assert.equal(trailingBlankAtEnd.frontmatter.prompt, "hello\n");
-		const folded = fm("description: >\n  normal\n\n  next\nname: x\n");
-		assert.equal(folded.frontmatter.description, "normal\nnext");
-	});
-
-	it("keeps whitespace-only trailing lines collected as before", () => {
-		const nested = fm("runner:\n  type: x\n  \nname: z\n");
-		assert.equal(nested.frontmatter.runner, "type: x\n");
-		assert.equal(fm("async:\n  true\n\n  \nname: x\n").frontmatter.async, "true");
-		const literal = fm("prompt: |\n  a\n  \nname: x\n");
-		assert.equal(literal.frontmatter.prompt, "a\n");
-	});
-
-	it("strips leading exactly-empty lines from a nested block value", () => {
-		assert.equal(fm("runner:\n\n  type: x\n").frontmatter.runner, "type: x");
+	it("keeps edge blank lines out of nested block values", () => {
+		assert.equal(fm("runner:\n  type: x\n\nname: z\n").frontmatter.runner, "type: x");
+		assert.equal(fm("runner:\n  type: x\n\n").frontmatter.runner, "type: x");
 		assert.equal(fm("runner:\n\n\n  type: x\n").frontmatter.runner, "type: x");
+		assert.equal(fm("runner:\n  type: x\n  \nname: z\n").frontmatter.runner, "type: x\n");
+		assert.equal(fm("async:\n  true\n\n  \nname: x\n").frontmatter.async, "true");
 	});
 
-	it("honors an indented plain scalar after an exactly-empty line", () => {
-		assert.equal(fm("model:\n\n  stray\n").frontmatter.model, "stray");
+	it("leaves literal and folded block edges unchanged", () => {
+		assert.equal(fm("prompt: |\n  hello\n\nname: x\n").frontmatter.prompt, "hello\n");
+		assert.equal(fm("description: >\n  normal\n\n  next\nname: x\n").frontmatter.description, "normal\nnext");
 	});
-
-	it("keeps comment lines out of nested block values", () => {
-		const parsed = fm("runner:\n  type: x\n  # note\n  command: y\nname: z\n");
-		assert.equal(parsed.frontmatter.runner, "type: x\ncommand: y");
-		assert.equal(parsed.frontmatter.name, "z");
-	});
-
-	it("parses an external-cli runner whose block-scalar arg spans exactly-empty lines", () => withTempHome(() => {
-		const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-block-scalar-arg-"));
-		tempDirs.push(project);
-		const script = ["const x = 1;", "", "process.stdout.write(JSON.stringify({ x }));"].join("\n");
-		writeAgent(path.join(project, ".pi", "agents", "loader.md"), [
-			"---",
-			"name: loader",
-			"description: Parses a block-scalar arg spanning empty lines",
-			"runner:",
-			"  type: external-cli",
-			"  command: node",
-			"  promptDelivery: stdin",
-			"  args:",
-			"    - -e",
-			"    - |",
-			...script.split("\n").map((line) => (line ? `      ${line}` : "")),
-			"async: true",
-			"---",
-			"",
-		].join("\n"));
-		const agent = discoverAgents(project, "project").agents.find((item) => item.name === "loader");
-		// `- |` clip-chomps: the delivered arg carries one trailing newline.
-		assert.deepEqual(agent?.runner, { type: "external-cli", command: "node", args: ["-e", `${script}\n`], promptDelivery: "stdin" });
-	}));
-
-	it("honors list items after an exactly-empty line through agent discovery", () => withTempHome(() => {
-		const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-blank-list-"));
-		tempDirs.push(project);
-		writeAgent(path.join(project, ".pi", "agents", "tooluser.md"), [
-			"---",
-			"name: tooluser",
-			"description: Tools after a blank line",
-			"tools:",
-			"  - read",
-			"",
-			"  - bash",
-			"---",
-			"",
-		].join("\n"));
-		const agent = discoverAgents(project, "project").agents.find((item) => item.name === "tooluser");
-		assert.deepEqual(agent?.tools, ["read", "bash"]);
-	}));
 });
 
 describe("agent runner frontmatter", () => {

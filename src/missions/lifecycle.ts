@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { writePrivateAtomicJson } from "../shared/atomic-json.ts";
 import { PROMPT_REDACTED } from "../shared/utils.ts";
-import type { Details, SubagentRunMode } from "../shared/types.ts";
+import type { AcceptanceLedgerStatus, Details, SubagentRunMode } from "../shared/types.ts";
 import { validateMissionLaunch } from "./actions.ts";
 import type { MissionArtifact, MissionRecord, MissionRunLink, MissionRunMode, MissionStatus, MissionStoreConfig, MissionStoreLocation } from "./types.ts";
 import { createMission, MissionNotFoundError, missionRecordPath, readMission, resolveMissionStoreLocation, updateMission, validateMissionId } from "./store.ts";
@@ -101,26 +101,14 @@ function runStatusForResult(result: AgentToolResult<Details>): string {
 	return "completed";
 }
 
-/**
- * Acceptance ledger statuses that mean nobody accepted the child's result:
- * evidence is missing, only self-reported with a required review pending,
- * or rejected. A run that ends with one of them does not complete a mission
- * the caller asked for with `mission` or `missionId`. Missions made by default
- * for ordinary launches still complete, since nobody is expected to close them.
- */
-const UNACCEPTED_ACCEPTANCE_STATUSES = new Set(["pending", "claimed", "review-required", "rejected"]);
-
-function acceptanceStatusOf(value: unknown): string | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-	const acceptance = (value as { acceptance?: unknown }).acceptance;
-	if (!acceptance || typeof acceptance !== "object" || Array.isArray(acceptance)) return undefined;
-	const status = (acceptance as { status?: unknown }).status;
-	return typeof status === "string" && status.trim() ? status : undefined;
-}
+/** Acceptance statuses that mean nobody accepted the child's result. */
+const UNACCEPTED_ACCEPTANCE_STATUSES = new Set<string | undefined>(["pending", "claimed", "review-required", "rejected"] satisfies AcceptanceLedgerStatus[]);
 
 /** The first unaccepted acceptance status among child results, else the first status found. */
-export function missionAcceptanceStatus(results: readonly unknown[] | undefined): string | undefined {
-	const statuses = (results ?? []).map(acceptanceStatusOf).filter((status): status is string => status !== undefined);
+export function missionAcceptanceStatus(results: unknown): string | undefined {
+	const statuses = (Array.isArray(results) ? results : [])
+		.map((result) => (result as { acceptance?: { status?: unknown } } | null | undefined)?.acceptance?.status)
+		.filter((status): status is string => typeof status === "string" && status.trim() !== "");
 	return statuses.find((status) => UNACCEPTED_ACCEPTANCE_STATUSES.has(status)) ?? statuses[0];
 }
 
@@ -129,12 +117,12 @@ export function missionAcceptanceStatus(results: readonly unknown[] | undefined)
  * completes a mission from run state goes through here.
  */
 export function finishedMissionStatus(record: MissionRecord, autoCreated: boolean, runAcceptance: ReadonlyArray<{ runId: string; status: string | undefined }>): "completed" | "waiting" {
+	// Nobody is expected to close a mission made by default for an ordinary launch.
 	if (autoCreated) return "completed";
-	const unaccepted = (status: string | undefined) => status !== undefined && UNACCEPTED_ACCEPTANCE_STATUSES.has(status);
-	if (runAcceptance.some((run) => unaccepted(run.status))) return "waiting";
+	if (runAcceptance.some((run) => UNACCEPTED_ACCEPTANCE_STATUSES.has(run.status))) return "waiting";
 	// A run reported here supersedes its older workflow child record.
-	const reported = new Set(runAcceptance.map((run) => run.runId));
-	return record.workflowChildren.some((child) => !(child.runId !== undefined && reported.has(child.runId)) && unaccepted(child.acceptanceStatus)) ? "waiting" : "completed";
+	const reported = new Set<string | undefined>(runAcceptance.map((run) => run.runId));
+	return record.workflowChildren.some((child) => !reported.has(child.runId) && UNACCEPTED_ACCEPTANCE_STATUSES.has(child.acceptanceStatus)) ? "waiting" : "completed";
 }
 
 function missionStatusForRun(record: MissionRecord, runId: string, runStatus: string, acceptanceStatus: string | undefined, autoCreated: boolean): MissionStatus {
@@ -397,7 +385,7 @@ export function syncMissionFromAsyncCompletion(value: unknown): MissionRecord | 
 				? "stopped"
 				: "failed";
 	const workflowChildTerminal = !["running", "queued", "active", "paused"].includes(workflowChildStatus);
-	const acceptanceStatus = missionAcceptanceStatus(Array.isArray(event.results) ? event.results : undefined);
+	const acceptanceStatus = missionAcceptanceStatus(event.results);
 	return updateMission(binding.location, binding.missionId, {
 		status: missionStatusForRun(current, runId, runStatus, acceptanceStatus, binding.autoCreated),
 		addRuns: [{ runId, mode: typeof event.mode === "string" && ["single", "parallel", "chain", "workflow"].includes(event.mode) ? event.mode as SubagentRunMode : "external", asyncDir: event.asyncDir, status: runStatus, completedAt, ...(usage && usage.tokens > 0 ? { usage } : {}) }],

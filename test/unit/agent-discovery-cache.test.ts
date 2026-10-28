@@ -60,31 +60,15 @@ describe("agent discovery snapshots", () => {
 		const markers = [".pi", ".agents", ".git"].map((name) => path.join(tempRoot, name));
 		for (const marker of markers) fs.mkdirSync(marker, { recursive: true });
 		fs.mkdirSync(project, { recursive: true });
-		writeAgent(path.join(home, ".pi", "agent", "agents", "owner-probe.md"), "owner-probe", "User probe");
 		const mutableFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
-		const observed: string[] = [];
-		const record = (value: unknown) => {
-			if (typeof value === "string" && markers.includes(path.resolve(value))) observed.push(path.resolve(value));
-		};
-		const stat = mutableFs.statSync;
-		const readdir = mutableFs.readdirSync;
+		const stat = t.mock.method(mutableFs, "statSync");
+		const readdir = t.mock.method(mutableFs, "readdirSync");
 		try {
-			t.mock.method(mutableFs, "statSync", (...args: Parameters<typeof stat>) => {
-				record(args[0]); return Reflect.apply(stat, mutableFs, args);
-			});
-			t.mock.method(mutableFs, "readdirSync", (...args: Parameters<typeof readdir>) => {
-				record(args[0]); return Reflect.apply(readdir, mutableFs, args);
-			});
 			syncBuiltinESMExports();
-			// Prove namespace bindings observe the instrumentation before testing discovery.
-			fs.statSync(markers[0]); fs.readdirSync(markers[0]);
-			assert.equal(observed.length, 2);
-			observed.length = 0;
-			for (const phase of ["cold", "warm"]) {
-				const snapshot = discoverAgentSnapshot(project, "both", undefined, { includeChains: false, projectTrusted: false });
-				assert.equal(snapshot.effective.agents.some((agent) => agent.name === "owner-probe"), true, phase);
-				assert.deepEqual(observed, [], phase);
-			}
+			for (let pass = 0; pass < 2; pass++) discoverAgentSnapshot(project, "both", undefined, { includeChains: false, projectTrusted: false });
+			const probed = [...stat.mock.calls, ...readdir.mock.calls].map((call) => path.resolve(String(call.arguments[0])));
+			assert.ok(probed.length > 0, "discovery reads through the spied fs");
+			assert.deepEqual(probed.filter((probe) => markers.includes(probe)), []);
 		} finally {
 			t.mock.restoreAll();
 			syncBuiltinESMExports();

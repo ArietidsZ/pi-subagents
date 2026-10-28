@@ -73,7 +73,7 @@ export interface MissionWorkflowChild {
 	sessionPath?: string;
 	artifactPaths: string[];
 	heartbeat?: MissionChildHeartbeat;
-	/** Acceptance ledger status of the child's latest finished attempt. */
+	/** Latest acceptance ledger status reported for the child. */
 	acceptanceStatus?: string;
 }
 

@@ -172,7 +172,7 @@ interface AsyncExecutionContext {
 	cwd: string;
 	currentSessionId: string;
 	completionOwnerId?: string;
-	/** Parent session id used by permission-system ask forwarding. */
+	/** Parent Pi session id (`getSessionId()`): keys permission-system ask forwarding and capability ceilings. */
 	parentSessionId?: string;
 	/** Parent session file, recorded as each new child session's `parentSession` header. */
 	parentSessionFile?: string;

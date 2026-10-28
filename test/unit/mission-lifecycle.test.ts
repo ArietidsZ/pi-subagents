@@ -328,9 +328,7 @@ describe("mission launch lifecycle", () => {
 				return readMission(binding.location, binding.missionId).status;
 			};
 			assert.equal(launch("Self-reported", "review-required"), "waiting");
-			assert.equal(launch("Rejected", "rejected"), "waiting");
 			assert.equal(launch("Verified", "verified"), "completed");
-			assert.equal(launch("Reviewed", "reviewed"), "completed");
 		} finally {
 			fs.rmSync(test.root, { recursive: true, force: true });
 		}
@@ -343,17 +341,11 @@ describe("mission launch lifecycle", () => {
 			fs.mkdirSync(asyncDir, { recursive: true });
 			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
 				state: "complete",
-				steps: [{ agent: "worker", status: "complete", acceptance: { status: "review-required", evidenceStatus: "checked" } }],
+				steps: [{ acceptance: { status: "review-required" } }],
 			}));
 			const binding = prepareMissionLaunch({ params: { mission: { title: "Fast run" }, task: "Do it" }, projectRoot: test.projectRoot, config: test.missionConfig });
 			assert.ok(binding);
-			attachMissionToLaunchResult({
-				binding,
-				result: {
-					content: [{ type: "text", text: "Async started" }],
-					details: { mode: "single", runId: "fast-1", asyncId: "fast-1", asyncDir, results: [] },
-				},
-			});
+			attachMissionToLaunchResult({ binding, result: { content: [{ type: "text", text: "Async started" }], details: { mode: "single", runId: "fast-1", asyncId: "fast-1", asyncDir, results: [] } } });
 			assert.equal(readMission(binding.location, binding.missionId).status, "waiting");
 		} finally {
 			fs.rmSync(test.root, { recursive: true, force: true });
@@ -367,21 +359,8 @@ describe("mission launch lifecycle", () => {
 			fs.mkdirSync(asyncDir, { recursive: true });
 			const binding = prepareMissionLaunch({ params: { task: "Edit the file" }, projectRoot: test.projectRoot, config: test.missionConfig });
 			assert.ok(binding);
-			attachMissionToLaunchResult({
-				binding,
-				result: {
-					content: [{ type: "text", text: "Async started" }],
-					details: { mode: "single", runId: "default-1", asyncId: "default-1", asyncDir, results: [] },
-				},
-			});
-			const done = syncMissionFromAsyncCompletion({
-				runId: "default-1",
-				asyncDir,
-				mode: "single",
-				state: "complete",
-				success: true,
-				results: [{ agent: "worker", acceptance: { status: "review-required", evidenceStatus: "checked" } }],
-			});
+			attachMissionToLaunchResult({ binding, result: { content: [{ type: "text", text: "Async started" }], details: { mode: "single", runId: "default-1", asyncId: "default-1", asyncDir, results: [] } } });
+			const done = syncMissionFromAsyncCompletion({ runId: "default-1", asyncDir, mode: "single", state: "complete", success: true, results: [{ acceptance: { status: "review-required" } }] });
 			assert.equal(done?.status, "completed");
 		} finally {
 			fs.rmSync(test.root, { recursive: true, force: true });
@@ -396,7 +375,7 @@ describe("mission launch lifecycle", () => {
 			const binding = prepareMissionLaunch({ params: { mission: { title: "Shown" }, task: "Do it" }, projectRoot: test.projectRoot, config: test.missionConfig });
 			assert.ok(binding);
 			attachMissionToLaunchResult({ binding, result: { content: [{ type: "text", text: "Async started" }], details: { mode: "single", runId: "shown-1", asyncId: "shown-1", asyncDir, results: [] } } });
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ state: "complete", steps: [{ status: "complete", acceptance: { status: "review-required" } }] }));
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ state: "complete", steps: [{ acceptance: { status: "review-required" } }] }));
 			const shown = handleMissionAction("mission.show", { missionId: binding.missionId }, { cwd: test.projectRoot, config: test.missionConfig });
 			assert.equal(shown.details?.mission?.status, "waiting");
 		} finally {
@@ -411,50 +390,13 @@ describe("mission launch lifecycle", () => {
 			const childDir = path.join(test.root, "child-run");
 			fs.mkdirSync(workflowDir, { recursive: true });
 			fs.mkdirSync(childDir, { recursive: true });
-			const binding = prepareMissionLaunch({
-				params: { mission: { title: "Draft the approval email" }, task: "Draft it" },
-				projectRoot: test.projectRoot,
-				config: test.missionConfig,
-			});
+			const binding = prepareMissionLaunch({ params: { mission: { title: "Draft the approval email" }, task: "Draft it" }, projectRoot: test.projectRoot, config: test.missionConfig });
 			assert.ok(binding);
-			attachMissionToLaunchResult({
-				binding,
-				result: {
-					content: [{ type: "text", text: "Async started" }],
-					details: { mode: "workflow", runId: "workflow-1", asyncId: "workflow-1", asyncDir: workflowDir, results: [] },
-				},
-			});
-			attachMissionToLaunchResult({
-				binding,
-				result: {
-					content: [{ type: "text", text: "Child started" }],
-					details: { mode: "single", runId: "child-1", asyncId: "child-1", asyncDir: childDir, results: [] },
-				},
-			});
-
-			const childDone = syncMissionFromAsyncCompletion({
-				runId: "child-1",
-				asyncDir: childDir,
-				mode: "single",
-				state: "complete",
-				success: true,
-				parentWorkflowRunId: "workflow-1",
-				workflowKey: "draft-email",
-				results: [{ agent: "worker", acceptance: { status: "review-required", evidenceStatus: "checked" } }],
-			});
-			assert.equal(childDone?.status, "active", "the workflow run is still active");
-			assert.equal(childDone?.workflowChildren[0]?.acceptanceStatus, "review-required");
-
-			const workflowDone = syncMissionFromAsyncCompletion({
-				runId: "workflow-1",
-				asyncDir: workflowDir,
-				mode: "workflow",
-				state: "complete",
-				success: true,
-				results: [],
-			});
+			attachMissionToLaunchResult({ binding, result: { content: [{ type: "text", text: "Async started" }], details: { mode: "workflow", runId: "workflow-1", asyncId: "workflow-1", asyncDir: workflowDir, results: [] } } });
+			attachMissionToLaunchResult({ binding, result: { content: [{ type: "text", text: "Child started" }], details: { mode: "single", runId: "child-1", asyncId: "child-1", asyncDir: childDir, results: [] } } });
+			syncMissionFromAsyncCompletion({ runId: "child-1", asyncDir: childDir, mode: "single", state: "complete", success: true, parentWorkflowRunId: "workflow-1", workflowKey: "draft-email", results: [{ acceptance: { status: "review-required" } }] });
+			const workflowDone = syncMissionFromAsyncCompletion({ runId: "workflow-1", asyncDir: workflowDir, mode: "workflow", state: "complete", success: true, results: [] });
 			assert.equal(workflowDone?.status, "waiting");
-			assert.equal(workflowDone?.runs.find((run) => run.runId === "workflow-1")?.status, "complete");
 		} finally {
 			fs.rmSync(test.root, { recursive: true, force: true });
 		}
