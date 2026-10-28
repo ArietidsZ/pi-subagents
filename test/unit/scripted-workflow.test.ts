@@ -924,6 +924,29 @@ describe("scripted workflow runtime", () => {
 		]);
 	});
 
+	it("keeps lane board text within 256 UTF-8 bytes without splitting characters", async () => {
+		for (const [input, expected] of [
+			["a".repeat(257), "a".repeat(253) + "..."],
+			["é".repeat(129), "é".repeat(126) + "..."],
+			["界".repeat(86), "界".repeat(84) + "..."],
+			["😀".repeat(65), "😀".repeat(63) + "..."],
+			["a".repeat(249) + "😀tail", "a".repeat(249) + "😀..."],
+			["界".repeat(85) + "a", "界".repeat(85) + "a"],
+		]) {
+			const result = await runWorkflowScript({
+				script: `return await runs.lanes([{ key: "lane", stages: [{ key: "check", agent: "worker", task: "check" }] }]);`,
+				async launch(key) {
+					return { key, ok: false, output: "", error: input, structuredOutput: { verdict: input }, artifactPaths: [] };
+				},
+				async status() { throw new Error("Unexpected status lookup"); },
+			});
+			const stage = (result.value as Array<{ stages: Array<{ error: string; verdict: string }> }>)[0]!.stages[0]!;
+			assert.equal(stage.error, expected);
+			assert.equal(stage.verdict, expected);
+			assert.ok(Buffer.byteLength(stage.error, "utf8") <= 256);
+		}
+	});
+
 	it("gives actionable guidance for a retained stage-0 resume", async () => {
 		let launches = 0;
 		await assert.rejects(

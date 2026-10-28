@@ -307,7 +307,7 @@ function laneBoardText(value) {
   if (typeof value !== "string" || !value) return undefined;
   if (laneByteLength(value) <= MAX_LANE_BOARD_TEXT_BYTES) return value;
   const bytes = new TextEncoder().encode(value).subarray(0, MAX_LANE_BOARD_TEXT_BYTES - 3);
-  return new TextDecoder().decode(bytes) + "...";
+  return new TextDecoder().decode(bytes, { stream: true }) + "...";
 }
 
 function laneBoardPath(value) {
