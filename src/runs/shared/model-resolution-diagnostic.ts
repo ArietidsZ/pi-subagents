@@ -102,3 +102,29 @@ export function formatInheritedProviderDiagnostic(diagnostic: ChildModelResoluti
 		`If ${provider} depends on those hooks, run this agent with \`async: true\` (a background child loads the ambient extensions unless the agent sets \`extensions\`), or load the extension for this agent with \`subagentOnlyExtensions\` or \`extensions\` in the agent frontmatter.`,
 	].join("\n");
 }
+
+/**
+ * Explain a background child that failed before any successful response on a
+ * provider a parent extension registered, when that extension did not load in
+ * the child. A parent extension can register a provider under a built-in id,
+ * so the model still resolves in the child, through the built-in provider
+ * rather than the parent's. Whether that caused this failure is unknown here,
+ * hence the conditional wording.
+ */
+export function formatMissingParentProviderDiagnostic(diagnostic: ChildModelResolutionDiagnostic & { provider: string }): string {
+	const subject = diagnostic.agent ? `Agent '${diagnostic.agent}'` : "Subagent";
+	const model = diagnostic.model ? `'${diagnostic.model}'` : "this model";
+	const provider = `'${diagnostic.provider}'`;
+	const facts = `${subject} ran as a background child without the ambient extensions. In the parent, provider ${provider} for ${model} is registered by an extension that did not load in this child, so the child sent its requests without that extension's provider, through the built-in provider of the same id if there is one.`;
+	if (capabilityCeilingDeniesExtensions(diagnostic)) {
+		return [
+			facts,
+			`${denyExtensionsClause(diagnostic)}, so that extension cannot load for this child: listed \`subagentOnlyExtensions\` or \`extensions\` entries are suppressed, and leaving \`extensions\` unset does not enable ambient loading.`,
+			`If ${provider} depends on that extension, relax the capability ceiling to allow extensions, or use a model whose provider does not.`,
+		].join("\n");
+	}
+	return [
+		facts,
+		`If ${provider} depends on that extension, list it in \`subagentOnlyExtensions\` or \`extensions\` in the agent frontmatter, leave \`extensions\` unset so the child loads the ambient extensions, or register it from the host with \`registerRequiredChildExtensions\` so it loads for every launch.`,
+	].join("\n");
+}

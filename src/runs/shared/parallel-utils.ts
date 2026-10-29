@@ -51,6 +51,8 @@ export interface RunnerSubagentStep {
 	modelVerificationRegistry?: Array<{ provider: string; id: string; fullId: string; contextWindow?: number }>;
 	modelResponseAliases?: Record<string, string[]>;
 	tools?: string[];
+	/** Provider of `model` that a parent extension registers; set only when this child loads no ambient extensions. */
+	parentExtensionProvider?: string;
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;
 	/** Resolved selected-agent policy for launches made by this child. */

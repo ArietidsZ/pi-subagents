@@ -21,7 +21,7 @@ import {
 } from "../../watchdog/child-status.ts";
 import { projectChildLifecycle, type ChildLifecycleAction, type ChildLifecycleState } from "../shared/child-lifecycle.ts";
 import { formatSubagentModelVerificationError } from "../shared/model-resolution.ts";
-import { formatChildModelResolutionDiagnostic, isChildModelResolutionFailure } from "../shared/model-resolution-diagnostic.ts";
+import { formatChildModelResolutionDiagnostic, formatMissingParentProviderDiagnostic, isChildModelResolutionFailure } from "../shared/model-resolution-diagnostic.ts";
 import { isMutatingTool, resolveCurrentPath } from "../shared/long-running-guard.ts";
 import { effectiveToolTimeoutMs, formatToolTimeoutMessage, toolTimeoutCallKey } from "../shared/tool-timeout.ts";
 import { createReportedChildSessionInput, type InProcessChildLaunch } from "../shared/child-launch.ts";
@@ -105,6 +105,8 @@ export interface RunChildSessionInput {
 	modelVerificationRegistry?: Array<{ provider: string; id: string; fullId: string }>;
 	modelResponseAliases?: Record<string, string[]>;
 	mutationTools?: readonly string[];
+	/** Provider of the launch model that a parent extension registered and this child does not load. */
+	parentExtensionProvider?: string;
 }
 
 export interface RunChildSessionResult {
@@ -624,6 +626,13 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				&& terminalUsage.turns === 0
 				&& !input.launch.session.ambientExtensions) {
 				finalError = `${promptErrorMessage}\n\n${formatChildModelResolutionDiagnostic({ agent: input.launch.config.agent, model: input.launch.session.model, host: "runner", capabilityCeiling: input.launch.toolPlan.capabilityCeiling })}`;
+			} else if (input.parentExtensionProvider
+				&& session?.claimedProvider !== input.parentExtensionProvider
+				&& finalError !== undefined
+				&& (finalError === promptErrorMessage || finalError === assistantError)
+				&& toolCount === 0
+				&& messages.every((message) => message.role !== "assistant" || (message as { stopReason?: string }).stopReason === "error")) {
+				finalError = `${finalError}\n\n${formatMissingParentProviderDiagnostic({ agent: input.launch.config.agent, model: input.launch.session.model, provider: input.parentExtensionProvider, capabilityCeiling: input.launch.toolPlan.capabilityCeiling })}`;
 			}
 			const forcedDrainAfterFinalSuccess = (forced || forcedTermination) && (cleanTerminalAssistantStopReceived || agentSettledReceived) && !finalError;
 			const forcedDrainAfterEmptyTerminal = forcedDrainAfterFinalSuccess && hasEmptyTerminalAssistantResponse(messages);
