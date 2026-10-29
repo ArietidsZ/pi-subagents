@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.84.0] - 2026-10-28
+
+### Highlights
+
+- Security fix: workflow scripts can no longer reach the Pi process outside their sandbox. Upgrade if you use workflow scripts.
+- A locked-down background agent that fails because one of your extensions' providers did not load in it now says which provider and how to load it.
+- Old background runs are now actually deleted from disk.
+
 ### Security
 
 - Workflow scripts could reach the Pi process outside their sandbox. Upgrade to this version; see [GHSA-6v8j-6w28-2w8r](https://github.com/nicobailon/pi-subagents/security/advisories/GHSA-6v8j-6w28-2w8r) for affected versions and a workaround. Workflow scripts can no longer set `Error.prepareStackTrace`, and a script that calls `import()`, which always failed inside a workflow, is now rejected before it runs.
