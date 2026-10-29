@@ -1,3 +1,5 @@
+"use strict";
+
 const { parentPort, workerData } = require("node:worker_threads");
 const vm = require("node:vm");
 const { inspect } = require("node:util");
@@ -18,6 +20,71 @@ function createWorkflowPromiseHook(callbacks) {
   }
 }
 
+// Workflow scripts run in their own vm context (the script realm). The API a script can reach (runs,
+// state, emit, console, Promise, results, errors) is built by workflowRuntime inside a second vm
+// context (the runtime realm), compiled from this function's source. Neither realm can compile code
+// from strings, and no worker-realm object may ever become reachable from either: one would hand the
+// script the worker's Function, and with it process. The runtime talks to the worker only through
+// `bridge`, which it keeps in this closure, passes only strings and numbers, and calls in try/catch so
+// a worker-realm exception (even a stack overflow) never reaches script code.
+function workflowRuntime(bridge, scriptRealm, stateEnabled) {
+"use strict";
+
+// Promise hooks report every promise in the isolate, the worker's own included. Captured before any
+// script runs, so a script that replaces Object.getPrototypeOf cannot receive a worker promise.
+const getPrototypeOf = Object.getPrototypeOf;
+const runtimePromisePrototype = Promise.prototype;
+const nativePromisePrototype = scriptRealm.promisePrototype;
+
+function isWorkflowRealmPromise(value) {
+  if (!value || typeof value !== "object") return false;
+  let prototype = getPrototypeOf(value);
+  for (let depth = 0; prototype && depth < 16; depth++) {
+    if (prototype === nativePromisePrototype || prototype === runtimePromisePrototype) return true;
+    prototype = getPrototypeOf(prototype);
+  }
+  return false;
+}
+
+function post(message) {
+  const json = JSON.stringify(message);
+  let posted = false;
+  try {
+    posted = bridge.post(json);
+  } catch {}
+  if (posted !== true) throw new Error("Workflow runtime could not send a message to the host.");
+}
+
+function inspectValue(value) {
+  let encoded;
+  try {
+    encoded = bridge.inspect(value);
+  } catch {}
+  if (typeof encoded !== "string") throw new Error("console could not format a value.");
+  const decoded = JSON.parse(encoded);
+  if (decoded[0] !== true) throw new Error(String(decoded[1]));
+  return decoded[1];
+}
+
+function utf8ByteLength(value) {
+  if (typeof value !== "string") throw new TypeError("Expected a string to measure.");
+  let length;
+  try {
+    length = bridge.utf8Length(value);
+  } catch {}
+  if (typeof length !== "number" || length < 0) throw new Error("Workflow runtime could not measure a string.");
+  return length;
+}
+
+function utf8Prefix(value, maxBytes) {
+  let prefix;
+  try {
+    prefix = bridge.utf8Prefix(value, maxBytes);
+  } catch {}
+  if (typeof prefix !== "string") throw new Error("Workflow runtime could not truncate a string.");
+  return prefix;
+}
+
 let nextCallId = 0;
 let topLevelWorkflowPromise;
 let suppressNativePromiseConsumption = 0;
@@ -26,7 +93,7 @@ const pending = new Map();
 const workflowErrorKinds = new WeakMap();
 const runKeyPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 function validGitRef(ref) {
-  if (typeof ref !== "string" || !ref || ref === "@" || new TextEncoder().encode(ref).length > 1024 || ref.startsWith("/") || ref.endsWith("/") || ref.includes("//") || ref.includes("..") || ref.includes("@{")) return false;
+  if (typeof ref !== "string" || !ref || ref === "@" || utf8ByteLength(ref) > 1024 || ref.startsWith("/") || ref.endsWith("/") || ref.includes("//") || ref.includes("..") || ref.includes("@{")) return false;
   if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(ref)) return false;
   if (/[[\]\\~^:?*\u0000-\u0020\u007f]/u.test(ref) || ref.endsWith(".") || ref.endsWith(".lock")) return false;
   return ref.split("/").every((component) => component.length > 0 && component !== "." && component !== ".." && !component.startsWith(".") && !component.endsWith(".") && !component.endsWith(".lock"));
@@ -122,7 +189,7 @@ function addTrackedObservations(tracker, observations) {
   for (const observation of tracker.observations) {
     if (observedCallIds.has(observation.callId)) continue;
     observedCallIds.add(observation.callId);
-    parentPort.postMessage({ type: "callObserved", callId: observation.callId, key: observation.key, operation: observation.operation });
+    post({ type: "callObserved", callId: observation.callId, key: observation.key, operation: observation.operation });
   }
 }
 
@@ -247,7 +314,7 @@ function hostCall(method, args, observation) {
   const callId = ++nextCallId;
   const promise = new Promise((resolve, reject) => {
     pending.set(callId, { resolve, reject });
-    parentPort.postMessage({ type: "call", callId, method, args });
+    post({ type: "call", callId, method, args });
   });
   return observation && typeof observation.key === "string" && typeof observation.operation === "string"
     ? trackRunObservation([{ key: observation.key, operation: observation.operation, callId }], promise)
@@ -258,7 +325,7 @@ function runHostCall(key, params, collectFailure, batch, generatedLaneKey) {
   const callId = ++nextCallId;
   const promise = new Promise((resolve, reject) => {
     pending.set(callId, { resolve, reject });
-    parentPort.postMessage({ type: "call", callId, method: "run", args: { key, params, ...(collectFailure ? { collectFailure: true } : {}), ...(batch ? { batch } : {}), ...(generatedLaneKey ? { generatedLaneKey } : {}) } });
+    post({ type: "call", callId, method: "run", args: { key, params, ...(collectFailure ? { collectFailure: true } : {}), ...(batch ? { batch } : {}), ...(generatedLaneKey ? { generatedLaneKey } : {}) } });
   });
   return { key, callId, promise };
 }
@@ -300,14 +367,13 @@ function wrapRunsAllResults(results, keys) {
 }
 
 function laneByteLength(value) {
-  return new TextEncoder().encode(value).byteLength;
+  return utf8ByteLength(value);
 }
 
 function laneBoardText(value) {
   if (typeof value !== "string" || !value) return undefined;
   if (laneByteLength(value) <= MAX_LANE_BOARD_TEXT_BYTES) return value;
-  const bytes = new TextEncoder().encode(value).subarray(0, MAX_LANE_BOARD_TEXT_BYTES - 3);
-  return new TextDecoder().decode(bytes, { stream: true }) + "...";
+  return utf8Prefix(value, MAX_LANE_BOARD_TEXT_BYTES - 3) + "...";
 }
 
 function laneBoardPath(value) {
@@ -508,7 +574,7 @@ function workflowPlanStringMetadata(params) {
 
 function runLanes(laneSpecs) {
   const lanes = validateLaneSpecs(laneSpecs);
-  parentPort.postMessage({ type: "lanePlan", lanes: lanes.map((lane) => ({
+  post({ type: "lanePlan", lanes: lanes.map((lane) => ({
     key: lane.key,
     stages: lane.stages.map((stage) => ({
       key: stage.key,
@@ -576,7 +642,7 @@ function validateExtensionBindings(value, label) {
     }
   }
   visit(value, 0);
-  if (new TextEncoder().encode(stableRunJson(value)).byteLength > 16384) throw new Error(label + " extensionBindings canonical JSON exceeds 16384 bytes.");
+  if (utf8ByteLength(stableRunJson(value)) > 16384) throw new Error(label + " extensionBindings canonical JSON exceeds 16384 bytes.");
 }
 
 function validateLaneMetadata(value, label, workflowKey) {
@@ -590,7 +656,7 @@ function validateLaneMetadata(value, label, workflowKey) {
   if (typeof value.key !== "string" || !value.key.trim() || !runKeyPattern.test(value.key.trim())) throw new Error(label + ".key is invalid.");
   if (workflowKey !== undefined && value.key.trim() !== workflowKey) throw new Error(label + ".key must match workflow key '" + workflowKey + "'.");
   if (value.mode !== undefined && !["mutation", "review", "scout", "gate"].includes(value.mode)) throw new Error(label + ".mode is invalid.");
-  const bounded = (entry, maxBytes) => typeof entry === "string" && entry.trim() && new TextEncoder().encode(entry.trim()).byteLength <= maxBytes && !/[\r\n\u0000]/.test(entry);
+  const bounded = (entry, maxBytes) => typeof entry === "string" && entry.trim() && utf8ByteLength(entry.trim()) <= maxBytes && !/[\r\n\u0000]/.test(entry);
   if (value.sourceRef !== undefined && !bounded(value.sourceRef, 128)) throw new Error(label + ".sourceRef is invalid.");
   for (const [name, maxItems, maxLength] of [["claims", 20, 160], ["outputPaths", 10, 256]]) {
     if (value[name] === undefined) continue;
@@ -682,11 +748,11 @@ function validateHostCommand(key, params) {
     throw new Error("runs.host('" + key + "') params have unsupported fields: " + unknown.join(", ") + "." + cwdHint);
   }
   if (params.kind !== "command") throw new Error("runs.host('" + key + "') kind must be 'command'.");
-  if (typeof params.command !== "string" || !params.command.trim() || params.command.includes("\u0000") || new TextEncoder().encode(params.command.trim()).byteLength > 16384) throw new Error("runs.host('" + key + "') command must be a non-empty string of at most 16384 bytes without NUL.");
+  if (typeof params.command !== "string" || !params.command.trim() || params.command.includes("\u0000") || utf8ByteLength(params.command.trim()) > 16384) throw new Error("runs.host('" + key + "') command must be a non-empty string of at most 16384 bytes without NUL.");
   if (!Number.isInteger(params.timeoutMs) || params.timeoutMs < 1 || params.timeoutMs > 86400000) throw new Error("runs.host('" + key + "') timeoutMs must be an integer from 1 to 86400000.");
-  if (params.output !== undefined && (typeof params.output !== "string" || !params.output.trim() || /^[/\\]|(?:^|[/\\])\.\.(?:[/\\]|$)/.test(params.output) || /[\u0000-\u001f\u007f]/.test(params.output) || new TextEncoder().encode(params.output.trim()).byteLength > 240)) throw new Error("runs.host('" + key + "') output must be a bounded relative path without traversal or control characters.");
+  if (params.output !== undefined && (typeof params.output !== "string" || !params.output.trim() || /^[/\\]|(?:^|[/\\])\.\.(?:[/\\]|$)/.test(params.output) || /[\u0000-\u001f\u007f]/.test(params.output) || utf8ByteLength(params.output.trim()) > 240)) throw new Error("runs.host('" + key + "') output must be a bounded relative path without traversal or control characters.");
   if (params.role !== undefined && params.role !== "ci" && params.role !== "gate") throw new Error("runs.host('" + key + "') role must be 'ci' or 'gate'.");
-  if (params.provider !== undefined && (typeof params.provider !== "string" || !params.provider.trim() || /[\r\n\u0000]/.test(params.provider) || new TextEncoder().encode(params.provider.trim()).byteLength > 64)) throw new Error("runs.host('" + key + "') provider must be a non-empty single-line string of at most 64 bytes.");
+  if (params.provider !== undefined && (typeof params.provider !== "string" || !params.provider.trim() || /[\r\n\u0000]/.test(params.provider) || utf8ByteLength(params.provider.trim()) > 64)) throw new Error("runs.host('" + key + "') provider must be a non-empty single-line string of at most 64 bytes.");
   assertJsonValue(params, "runs.host('" + key + "') params");
   if (hostKeys.has(key) || runFingerprints.has(key)) throw new Error("Workflow key '" + key + "' is already in use.");
   if (hostKeys.size >= 32) throw new Error("workflowScript supports at most 32 runs.host calls.");
@@ -807,92 +873,22 @@ const state = Object.freeze({
   },
 });
 
-let contextObjectPrototype;
+const contextObjectPrototype = scriptRealm.objectPrototype;
 
 const capturedConsole = Object.freeze(Object.fromEntries(
   ["log", "info", "warn", "error"].map((level) => [level, (...args) => {
-    parentPort.postMessage({ type: "console", level, text: args.map((value) => typeof value === "string" ? value : inspect(value, { depth: 4, breakLength: 120 })).join(" ") });
+    post({ type: "console", level, text: args.map((value) => typeof value === "string" ? value : inspectValue(value)).join(" ") });
   }]),
 ));
-
-function formatWorkflowScriptSyntaxError(error) {
-  const details = formatWorkflowScriptError(error);
-  return [
-    "workflowScript must be valid JavaScript.",
-    "If task text contains Markdown fences or backticks, use an array joined with \"\\n\" or escaped strings instead of a raw backtick template literal.",
-    "",
-    "Original SyntaxError:",
-    details,
-  ].join("\n");
-}
-
-function formatWorkflowScriptError(error) {
-  const message = error && typeof error.message === "string" ? error.message : String(error);
-  const stack = error && typeof error.stack === "string" ? error.stack : "";
-  if (!stack) return message;
-  return stack.includes(message) ? stack : message + "\n" + stack;
-}
-
-function isSyntaxError(error) {
-  return error instanceof SyntaxError || error?.name === "SyntaxError";
-}
 
 function postWorkflowError(error) {
   // Pre-run syntax and portability errors are tagged "validation" where the script is compiled;
   // anything reaching here was thrown while the script ran, including a runtime SyntaxError.
   const taggedKind = error && (typeof error === "object" || typeof error === "function") ? workflowErrorKinds.get(error) : undefined;
-  parentPort.postMessage({ type: "error", error: isSyntaxError(error) ? formatWorkflowScriptSyntaxError(error) : formatWorkflowScriptError(error), errorKind: taggedKind ?? "script" });
+  post({ type: "error", error: isSyntaxError(error) ? formatWorkflowScriptSyntaxError(error) : formatWorkflowScriptError(error), errorKind: taggedKind ?? "script" });
 }
-
-process.on("unhandledRejection", postWorkflowError);
-
-const NESTED_ASYNC_WORKFLOW_ERROR = "workflowScript validation failed before child launch; no children launched. workflowScript does not support nested async functions. Use top-level await, plain helper functions that return runs.run(...), or explicit Promise chains so workflows stay portable across Node and Bun. Parallel plus sequential rewrite: const a = runs.run(\"a\", { agent: \"worker\", task: \"A\" }); const writer = await runs.run(\"writer\", { agent: \"worker\", task: \"Write\" }); const review = await runs.run(\"review\", { agent: \"reviewer\", task: writer.output }); const [aResult] = await Promise.all([a]); return { a: aResult.output, issue: { writerRunId: writer.runId, reviewRunId: review.runId } };";
-const AST_SCALAR_KEYS = new Set(["type", "start", "end"]);
-
-function assertPortableWorkflowScript(source) {
-  const wrapped = "(async () => {\n" + source + "\n})()";
-  let ast;
-  try {
-    ast = parse(wrapped, { ecmaVersion: "latest", sourceType: "script" });
-  } catch (error) {
-    // The wrapper adds one line before the script; report the script's own line.
-    if (isSyntaxError(error) && typeof error.message === "string") {
-      const message = error.message.replace(/\((\d+):(\d+)\)$/, (_match, line, column) => "(" + Math.max(1, Number(line) - 1) + ":" + column + ")");
-      if (typeof error.stack === "string") error.stack = error.stack.replace(error.message, message);
-      error.message = message;
-    }
-    throw error;
-  }
-  const wrapper = workflowWrapperFunction(ast);
-  walkWorkflowAst(wrapper.body, wrapper);
-}
-
-function workflowWrapperFunction(ast) {
-  const wrapper = ast.body?.[0]?.expression?.callee;
-  if (!wrapper || wrapper.type !== "ArrowFunctionExpression") throw new Error("workflowScript wrapper parse invariant failed.");
-  return wrapper;
-}
-
-function isAsyncFunctionNode(node) {
-  return node.async === true && (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression");
-}
-
-function walkWorkflowAst(node, allowedAsyncFunction) {
-  if (!node || typeof node !== "object") return;
-  if (Array.isArray(node)) {
-    for (const item of node) walkWorkflowAst(item, allowedAsyncFunction);
-    return;
-  }
-  if (node !== allowedAsyncFunction && isAsyncFunctionNode(node)) {
-    throw new Error(NESTED_ASYNC_WORKFLOW_ERROR);
-  }
-  for (const [key, child] of Object.entries(node)) {
-    if (AST_SCALAR_KEYS.has(key)) continue;
-    walkWorkflowAst(child, allowedAsyncFunction);
-  }
-}
-
 function assertJsonValue(value, path = "emit", seen = new Set()) {
+
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new Error(path + " must contain only finite JSON numbers.");
@@ -959,110 +955,347 @@ function omitUndefinedWorkflowValues(value, seen = new Set()) {
   return normalized;
 }
 
+const scriptGlobals = { runs, Promise: workflowPromise, emit(value) { const unwrapped = unwrapRunsAllResults(value); const emittedValue = unwrapped === undefined ? null : omitUndefinedWorkflowValues(unwrapped); assertJsonValue(emittedValue); post({ type: "emit", value: emittedValue }); }, console: capturedConsole };
+if (stateEnabled) scriptGlobals.state = state;
+
+function deliver(callId, ok, encodedValue, errorText, errorKind) {
+  const entry = pending.get(callId);
+  if (!entry) return;
+  pending.delete(callId);
+  if (ok) entry.resolve(JSON.parse(encodedValue).value);
+  else {
+    const error = new Error(errorText);
+    if (errorKind === "child" || errorKind === "detached-child") workflowErrorKinds.set(error, errorKind);
+    entry.reject(error);
+  }
+}
+
+let nativeThenDescriptor;
+
+function beginWorkflowScript() {
+  try {
+    nativeThenDescriptor = Object.getOwnPropertyDescriptor(nativePromisePrototype, "then");
+    if (!nativeThenDescriptor || typeof nativeThenDescriptor.value !== "function") throw new Error("workflowScript could not inspect the VM Promise.prototype.then method.");
+    const nativeThen = nativeThenDescriptor.value;
+    // Some hosts freeze built-ins in every realm, which makes then read-only. The promise hooks
+    // still track observation, so skip the wrapper rather than fail every workflow.
+    if (nativeThenDescriptor.configurable) Object.defineProperty(nativePromisePrototype, "then", {
+      ...nativeThenDescriptor,
+      value: function workflowPromiseThen(...args) {
+        if (isDirectWorkflowScriptPromiseHandlerCall() || suppressNativePromiseConsumption > 0) {
+          return withSuppressedNativePromiseConsumption(() => Reflect.apply(nativeThen, this, args));
+        }
+        return Reflect.apply(nativeThen, this, args);
+      },
+    });
+    return true;
+  } catch (error) {
+    postWorkflowError(error);
+    return false;
+  }
+}
+
+function hookBefore(promise) {
+  if (!isWorkflowRealmPromise(promise)) return;
+  activeNativePromises.push(promise);
+}
+
+function hookAfter(promise) {
+  // Compare by identity rather than lastIndexOf: this may be a worker promise, and a script can replace Array methods.
+  for (let index = activeNativePromises.length - 1; index >= 0; index--) {
+    if (activeNativePromises[index] !== promise) continue;
+    activeNativePromises.splice(index, 1);
+    return;
+  }
+}
+
+function hookInit(promise, parent) {
+  if (!isWorkflowRealmPromise(promise)) return;
+  const childTracker = nativePromiseTracker(promise);
+  if (!parent || !isWorkflowRealmPromise(parent)) return;
+  nativePromiseParents.set(promise, parent);
+  const parentTracker = nativePromiseTracker(parent);
+  addTrackerDependency(childTracker, parentTracker);
+  const activePromise = activeNativePromises.at(-1);
+  if (activePromise && activePromise !== parent) {
+    addTrackerDependency(nativePromiseTracker(activePromise), parentTracker);
+  } else if (!activePromise && suppressNativePromiseConsumption === 0) {
+    markTrackedObservationsConsumed(parentTracker);
+  }
+}
+
+function endWorkflowScript() {
+  try {
+    let stopped = false;
+    try {
+      stopped = bridge.stopPromiseHooks();
+    } catch {}
+    if (stopped !== true) throw new Error("Workflow runtime could not stop its promise hooks.");
+  } finally {
+    try {
+      if (nativeThenDescriptor.configurable) Object.defineProperty(nativePromisePrototype, "then", nativeThenDescriptor);
+    } finally {
+      topLevelWorkflowPromise = undefined;
+      activeNativePromises.length = 0;
+      suppressNativePromiseConsumption = 0;
+      nativePromiseTrackers = new WeakMap();
+      nativePromiseParents = new WeakMap();
+    }
+  }
+}
+
+function completeWorkflowScript(value) {
+  const persistedValue = value === undefined ? null : omitUndefinedWorkflowValues(value);
+  try {
+    assertJsonValue(persistedValue, "return");
+  } catch (error) {
+    post({ type: "error", errorKind: "return-serialization", errorPhase: "return-serialization", error: formatWorkflowScriptError(error) });
+    return;
+  }
+  post({ type: "complete", value: persistedValue });
+}
+
+// The worker ran the compiled script: `result` is its completion value, or what it threw synchronously.
+function awaitWorkflowScript(threw, result) {
+  let settled;
+  try {
+    if (threw) throw result;
+    topLevelWorkflowPromise = result;
+    markTrackedObservationsConsumed(nativePromiseTracker(result));
+    settled = Promise.resolve(result);
+  } catch (error) {
+    settled = Promise.reject(error);
+  }
+  settled.then((value) => {
+    endWorkflowScript();
+    completeWorkflowScript(value);
+  }, (error) => {
+    endWorkflowScript();
+    postWorkflowError(error);
+  }).catch(postWorkflowError);
+}
+
+return Object.freeze({
+  __proto__: null,
+  scriptGlobals: Object.freeze(scriptGlobals),
+  deliver,
+  beginWorkflowScript,
+  hookBefore,
+  hookAfter,
+  hookInit,
+  awaitWorkflowScript,
+  reportError: postWorkflowError,
+});
+}
+
+function formatWorkflowScriptSyntaxError(error) {
+  const details = formatWorkflowScriptError(error);
+  return [
+    "workflowScript must be valid JavaScript.",
+    "If task text contains Markdown fences or backticks, use an array joined with \"\\n\" or escaped strings instead of a raw backtick template literal.",
+    "",
+    "Original SyntaxError:",
+    details,
+  ].join("\n");
+}
+
+function formatWorkflowScriptError(error) {
+  const message = error && typeof error.message === "string" ? error.message : String(error);
+  const stack = error && typeof error.stack === "string" ? error.stack : "";
+  if (!stack) return message;
+  return stack.includes(message) ? stack : message + "\n" + stack;
+}
+
+function isSyntaxError(error) {
+  return error instanceof SyntaxError || error?.name === "SyntaxError";
+}
+
+const NESTED_ASYNC_WORKFLOW_ERROR = "workflowScript validation failed before child launch; no children launched. workflowScript does not support nested async functions. Use top-level await, plain helper functions that return runs.run(...), or explicit Promise chains so workflows stay portable across Node and Bun. Parallel plus sequential rewrite: const a = runs.run(\"a\", { agent: \"worker\", task: \"A\" }); const writer = await runs.run(\"writer\", { agent: \"worker\", task: \"Write\" }); const review = await runs.run(\"review\", { agent: \"reviewer\", task: writer.output }); const [aResult] = await Promise.all([a]); return { a: aResult.output, issue: { writerRunId: writer.runId, reviewRunId: review.runId } };";
+const AST_SCALAR_KEYS = new Set(["type", "start", "end"]);
+// A script context has no module loader, and Node and Bun reject import() there with an error built in
+// the worker realm, so the call is refused before the script runs.
+const DYNAMIC_IMPORT_WORKFLOW_ERROR = "workflowScript validation failed before child launch; no children launched. workflowScript cannot load modules with import().";
+
+function assertPortableWorkflowScript(source) {
+  const wrapped = "(async () => {\n" + source + "\n})()";
+  let ast;
+  try {
+    ast = parse(wrapped, { ecmaVersion: "latest", sourceType: "script" });
+  } catch (error) {
+    // The wrapper adds one line before the script; report the script's own line.
+    if (isSyntaxError(error) && typeof error.message === "string") {
+      const message = error.message.replace(/\((\d+):(\d+)\)$/, (_match, line, column) => "(" + Math.max(1, Number(line) - 1) + ":" + column + ")");
+      if (typeof error.stack === "string") error.stack = error.stack.replace(error.message, message);
+      error.message = message;
+    }
+    throw error;
+  }
+  const wrapper = workflowWrapperFunction(ast);
+  // Walk the whole program, not just the wrapper body: a script can close the wrapper early.
+  walkWorkflowAst(ast, wrapper);
+}
+
+function workflowWrapperFunction(ast) {
+  const wrapper = ast.body?.[0]?.expression?.callee;
+  if (!wrapper || wrapper.type !== "ArrowFunctionExpression") throw new Error("workflowScript wrapper parse invariant failed.");
+  return wrapper;
+}
+
+function isAsyncFunctionNode(node) {
+  return node.async === true && (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression");
+}
+
+function walkWorkflowAst(node, allowedAsyncFunction) {
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (const item of node) walkWorkflowAst(item, allowedAsyncFunction);
+    return;
+  }
+  if (node !== allowedAsyncFunction && isAsyncFunctionNode(node)) {
+    throw new Error(NESTED_ASYNC_WORKFLOW_ERROR);
+  }
+  if (node.type === "ImportExpression") throw new Error(DYNAMIC_IMPORT_WORKFLOW_ERROR);
+  for (const [key, child] of Object.entries(node)) {
+    if (AST_SCALAR_KEYS.has(key)) continue;
+    walkWorkflowAst(child, allowedAsyncFunction);
+  }
+}
+
+// The error-format helpers run in both realms; the runtime realm compiles its own copies from their source.
+const WORKFLOW_RUNTIME_SOURCE = [
+  "(function (bridge, scriptRealm, stateEnabled) {",
+  "\"use strict\";",
+  formatWorkflowScriptSyntaxError,
+  formatWorkflowScriptError,
+  isSyntaxError,
+  "return (" + workflowRuntime + ")(bridge, scriptRealm, stateEnabled);",
+  "})",
+].join("\n");
+
+const VM_CONTEXT_OPTIONS = { codeGeneration: { strings: false, wasm: false } };
+const INSPECT_OPTIONS = { depth: 4, breakLength: 120, customInspect: false };
+
+let runtime;
+let stopWorkflowPromiseHook;
+
+// Each method takes and returns only strings, numbers and booleans, and catches its own failures.
+// inspect is the one exception on input: it formats a script value without calling script-defined
+// custom inspectors, which would receive worker-realm arguments.
+const bridge = Object.freeze({
+  __proto__: null,
+  post(json) {
+    try {
+      parentPort.postMessage(JSON.parse(json));
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  inspect(value) {
+    try {
+      return JSON.stringify([true, inspect(value, INSPECT_OPTIONS)]);
+    } catch (error) {
+      const message = error && typeof error.message === "string" ? error.message : "console could not format a value.";
+      return JSON.stringify([false, message]);
+    }
+  },
+  utf8Length(value) {
+    try {
+      return typeof value === "string" ? new TextEncoder().encode(value).byteLength : -1;
+    } catch {
+      return -1;
+    }
+  },
+  utf8Prefix(value, maxBytes) {
+    try {
+      if (typeof value !== "string" || typeof maxBytes !== "number") return undefined;
+      return new TextDecoder().decode(new TextEncoder().encode(value).subarray(0, maxBytes), { stream: true });
+    } catch {
+      return undefined;
+    }
+  },
+  stopPromiseHooks() {
+    const stop = stopWorkflowPromiseHook;
+    stopWorkflowPromiseHook = undefined;
+    try {
+      stop?.();
+      return true;
+    } catch {
+      return false;
+    }
+  },
+});
+
+function postWorkerError(error) {
+  parentPort.postMessage({ type: "error", error: isSyntaxError(error) ? formatWorkflowScriptSyntaxError(error) : formatWorkflowScriptError(error), errorKind: "script" });
+}
+
+process.on("unhandledRejection", (reason) => {
+  // A worker-realm reason is the worker's own failure; it must not enter the runtime realm.
+  if (runtime && !(reason instanceof Object)) runtime.reportError(reason);
+  else postWorkerError(reason);
+});
+
 function deepFreezeWorkflowArgs(value) {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
   for (const entry of Object.values(value)) deepFreezeWorkflowArgs(entry);
   return Object.freeze(value);
 }
 
-parentPort.on("message", async (message) => {
+function startWorkflow(message) {
+  const sandbox = Object.create(null);
+  // A null-prototype sandbox: the context resolves globals it lacks, such as globalThis.constructor,
+  // through the sandbox's prototype chain, which for an object literal is the worker's Object.prototype.
+  const context = vm.createContext(sandbox, VM_CONTEXT_OPTIONS);
+  const scriptRealm = vm.runInContext("({ __proto__: null, objectPrototype: Object.prototype, promisePrototype: (async () => {})().constructor.prototype })", context);
+  const createRuntime = new vm.Script(WORKFLOW_RUNTIME_SOURCE, { filename: "pi-workflow-runtime.js" }).runInContext(vm.createContext(Object.create(null), VM_CONTEXT_OPTIONS));
+  runtime = createRuntime(bridge, scriptRealm, Boolean(message.stateEnabled));
+  Object.assign(sandbox, runtime.scriptGlobals);
+  // Rebuild args inside the VM realm: a worker-realm object would expose the worker's unrestricted
+  // Function through args.constructor.constructor, bypassing codeGeneration.strings: false.
+  sandbox.args = deepFreezeWorkflowArgs(vm.runInContext("JSON.parse", context)(JSON.stringify(message.args ?? {})));
+  let compiled;
+  try {
+    assertPortableWorkflowScript(message.script);
+    compiled = new vm.Script("(async () => {\n" + message.script + "\n})()", { filename: "workflow-script.js", lineOffset: -1 });
+  } catch (error) {
+    parentPort.postMessage({ type: "error", errorKind: "validation", error: isSyntaxError(error) ? formatWorkflowScriptSyntaxError(error) : formatWorkflowScriptError(error) });
+    return;
+  }
+  if (!runtime.beginWorkflowScript()) return;
+  stopWorkflowPromiseHook = createWorkflowPromiseHook({ init: runtime.hookInit, before: runtime.hookBefore, after: runtime.hookAfter });
+  let result;
+  let threw = false;
+  try {
+    result = compiled.runInContext(context);
+  } catch (error) {
+    threw = true;
+    result = error;
+  }
+  runtime.awaitWorkflowScript(threw, result);
+}
+
+parentPort.on("message", (message) => {
   if (message.type === "response") {
-    const entry = pending.get(message.callId);
-    if (!entry) return;
-    pending.delete(message.callId);
-    if (message.ok) entry.resolve(message.value);
-    else {
-      const error = new Error(message.error);
-      if (message.errorKind === "child" || message.errorKind === "detached-child") workflowErrorKinds.set(error, message.errorKind);
-      entry.reject(error);
+    if (!runtime || typeof message.callId !== "number") return;
+    if (!message.ok) {
+      runtime.deliver(message.callId, false, undefined, message.error === undefined ? undefined : String(message.error), typeof message.errorKind === "string" ? message.errorKind : undefined);
+      return;
     }
+    let encodedValue;
+    try {
+      encodedValue = JSON.stringify({ value: message.value });
+    } catch (error) {
+      runtime.deliver(message.callId, false, undefined, "Workflow host response is not JSON: " + error.message, undefined);
+      return;
+    }
+    runtime.deliver(message.callId, true, encodedValue, undefined, undefined);
     return;
   }
   if (message.type !== "start") return;
   try {
-    const sandbox = { runs, Promise: workflowPromise, emit(value) { const unwrapped = unwrapRunsAllResults(value); const emittedValue = unwrapped === undefined ? null : omitUndefinedWorkflowValues(unwrapped); assertJsonValue(emittedValue); parentPort.postMessage({ type: "emit", value: emittedValue }); }, console: capturedConsole };
-    if (message.stateEnabled) sandbox.state = state;
-    const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
-    contextObjectPrototype = vm.runInContext("Object.prototype", context);
-    // Rebuild args inside the VM realm: a worker-realm object would expose the worker's unrestricted
-    // Function through args.constructor.constructor, bypassing codeGeneration.strings: false.
-    sandbox.args = deepFreezeWorkflowArgs(vm.runInContext("JSON.parse", context)(JSON.stringify(message.args ?? {})));
-    let compiled;
-    try {
-      assertPortableWorkflowScript(message.script);
-      compiled = new vm.Script("(async () => {\n" + message.script + "\n})()", { filename: "workflow-script.js", lineOffset: -1 });
-    } catch (error) {
-      parentPort.postMessage({ type: "error", errorKind: "validation", error: isSyntaxError(error) ? formatWorkflowScriptSyntaxError(error) : formatWorkflowScriptError(error) });
-      return;
-    }
-    const nativePromisePrototype = vm.runInContext("(async () => {})().constructor.prototype", context);
-    const nativeThenDescriptor = Object.getOwnPropertyDescriptor(nativePromisePrototype, "then");
-    if (!nativeThenDescriptor || typeof nativeThenDescriptor.value !== "function") throw new Error("workflowScript could not inspect the VM Promise.prototype.then method.");
-    const nativeThen = nativeThenDescriptor.value;
-    let stopWorkflowPromiseHook;
-    let value;
-    try {
-      // Some hosts freeze built-ins in every realm, which makes then read-only. The promise hooks
-      // below still track observation, so skip the wrapper rather than fail every workflow.
-      if (nativeThenDescriptor.configurable) Object.defineProperty(nativePromisePrototype, "then", {
-        ...nativeThenDescriptor,
-        value: function workflowPromiseThen(...args) {
-          if (isDirectWorkflowScriptPromiseHandlerCall() || suppressNativePromiseConsumption > 0) {
-            return withSuppressedNativePromiseConsumption(() => Reflect.apply(nativeThen, this, args));
-          }
-          return Reflect.apply(nativeThen, this, args);
-        },
-      });
-      stopWorkflowPromiseHook = createWorkflowPromiseHook({
-        before(promise) {
-          activeNativePromises.push(promise);
-        },
-        after(promise) {
-          const index = activeNativePromises.lastIndexOf(promise);
-          if (index !== -1) activeNativePromises.splice(index, 1);
-        },
-        init(promise, parent) {
-          const childTracker = nativePromiseTracker(promise);
-          if (!parent) return;
-          nativePromiseParents.set(promise, parent);
-          const parentTracker = nativePromiseTracker(parent);
-          addTrackerDependency(childTracker, parentTracker);
-          const activePromise = activeNativePromises.at(-1);
-          if (activePromise && activePromise !== parent) {
-            addTrackerDependency(nativePromiseTracker(activePromise), parentTracker);
-          } else if (!activePromise && suppressNativePromiseConsumption === 0) {
-            markTrackedObservationsConsumed(parentTracker);
-          }
-        },
-      });
-      const workflowResultPromise = compiled.runInContext(context);
-      topLevelWorkflowPromise = workflowResultPromise;
-      markTrackedObservationsConsumed(nativePromiseTracker(workflowResultPromise));
-      value = await workflowResultPromise;
-    } finally {
-      try {
-        stopWorkflowPromiseHook?.();
-      } finally {
-        try {
-          if (nativeThenDescriptor.configurable) Object.defineProperty(nativePromisePrototype, "then", nativeThenDescriptor);
-        } finally {
-          topLevelWorkflowPromise = undefined;
-          activeNativePromises.length = 0;
-          suppressNativePromiseConsumption = 0;
-          nativePromiseTrackers = new WeakMap();
-          nativePromiseParents = new WeakMap();
-        }
-      }
-    }
-    const persistedValue = value === undefined ? null : omitUndefinedWorkflowValues(value);
-    try {
-      assertJsonValue(persistedValue, "return");
-    } catch (error) {
-      parentPort.postMessage({ type: "error", errorKind: "return-serialization", errorPhase: "return-serialization", error: formatWorkflowScriptError(error) });
-      return;
-    }
-    parentPort.postMessage({ type: "complete", value: persistedValue });
+    startWorkflow(message);
   } catch (error) {
-    postWorkflowError(error);
+    postWorkerError(error);
   }
 });

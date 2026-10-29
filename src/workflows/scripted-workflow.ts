@@ -893,6 +893,7 @@ export function validateWorkflowScript(script: string, options: WorkflowScriptVa
 		if (node !== wrapper && node.async === true && (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression")) {
 			errors.push({ message: "workflowScript does not support nested async functions. Use top-level await, plain helper functions that return runs.run(...), or explicit Promise chains.", ...nodeLocation(node) });
 		}
+		if (node.type === "ImportExpression") errors.push({ message: "workflowScript cannot load modules with import().", ...nodeLocation(node) });
 		if (directRunsCall(node, "run")) {
 			const args = Array.isArray(node.arguments) ? node.arguments : [];
 			const keyNode = astNode(args[0]) ? args[0] : undefined;

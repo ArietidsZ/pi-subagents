@@ -74,6 +74,160 @@ describe("scripted workflow runtime", () => {
 		assert.deepEqual(escape.value, ["EvalError", "EvalError", "EvalError"], "args prototypes must belong to the VM realm so Function is blocked by codeGeneration.strings:false");
 	});
 
+	const realmHost = {
+		async launch(key: string) {
+			return key === "fails"
+				? { key, ok: false, output: "child failed", error: "child failed", artifactPaths: [] }
+				: { key, ok: true, output: `done ${key}`, runId: `run-${key}`, artifactPaths: [] };
+		},
+		async status(key: string) {
+			return key === "missing" ? { key, ok: false, output: "not found", artifactPaths: [] } : { key, ok: true, output: "ok", artifactPaths: [] };
+		},
+		async steer(key: string) { return { key, state: "delivered" as const }; },
+		async host(key: string) { return { key, kind: "command" as const, ok: true, state: "passed" as const, exitCode: 0, stdout: "", stderr: "", outputPath: "out.log", durationMs: 1 }; },
+		state: { get: () => ({ saved: true }), set: () => undefined },
+	};
+
+	it("blocks string compilation through every API value a workflow script receives", async () => {
+		const result = await runWorkflowScript({
+			...realmHost,
+			script: `
+				function realmOf(value) {
+					const outcomes = [() => value.constructor.constructor, () => Object.getPrototypeOf(value).constructor.constructor].map((getFunction) => {
+						try { getFunction()("return 1")(); return "worker"; } catch (error) { return error.name; }
+					});
+					return outcomes[0] === outcomes[1] ? outcomes[0] : outcomes.join("/");
+				}
+				const launched = runs.run("child", { agent: "worker", task: "t" });
+				const child = await launched;
+				const all = await runs.all([{ key: "all", agent: "worker", task: "t" }]);
+				let thrown;
+				try { runs.run(1); } catch (error) { thrown = error; }
+				const rejected = await runs.status("missing").then(() => undefined, (error) => error);
+				const nativePromise = WebAssembly.compile(new Uint8Array(0));
+				nativePromise.catch(() => undefined);
+				let customInspectorArgs;
+				console.log({ [Symbol.for("nodejs.util.inspect.custom")](depth, options, inspect) { customInspectorArgs = [options, inspect]; return "custom"; } });
+				let trapCaller = "not called";
+				await runs.run("proxied", new Proxy({ agent: "worker", task: "t" }, { ownKeys: function ownKeys(target) { trapCaller = ownKeys.caller; return Reflect.ownKeys(target); } }));
+				const callSiteValues = [];
+				Error.prepareStackTrace = (error, sites) => { for (const site of sites) callSiteValues.push(site, site.getFunction(), site.getThis()); return "trace"; };
+				console.log(new Error("stack first read by console"));
+				Error.prepareStackTrace = undefined;
+				const routes = {
+					globalThis, runs, emit, "console.log": console.log, "state.get": state.get,
+					...Object.fromEntries(Object.keys(runs).map((name) => ["runs." + name, runs[name]])),
+					Promise, "Promise.prototype": Promise.prototype, "new Promise": new Promise((resolve) => resolve(1)),
+					"runs.run promise": launched, "promise then": launched.then, "promise catch": launched.catch, "promise finally": launched.finally,
+					"runs.run result": child, "result toString": child.toString, "runs.status promise": runs.status("child"),
+					"runs.all result": all, "runs.all result map": all.map,
+					"thrown error": thrown, "rejected error": rejected, "script promise then": nativePromise.then,
+				};
+				return {
+					...Object.fromEntries(Object.entries(routes).map(([name, value]) => [name, realmOf(value)])),
+					"custom inspector": customInspectorArgs ? customInspectorArgs.map(realmOf).join("/") : "not called",
+					"proxy trap caller": trapCaller === null ? "hidden" : typeof trapCaller === "function" ? realmOf(trapCaller) : trapCaller,
+					"console call sites": callSiteValues.length === 0 ? "not called" : callSiteValues.filter(Boolean).every((value) => realmOf(value) === "EvalError") ? "EvalError" : "worker",
+				};
+			`,
+		});
+		const value = result.value as Record<string, string>;
+		assert.deepEqual(
+			Object.entries(value).filter(([, realm]) => realm !== "EvalError"),
+			[["custom inspector", "not called"], ["proxy trap caller", "hidden"]],
+			"every value must come from a realm whose Function cannot compile strings",
+		);
+		assert.ok(Object.keys(value).length > 25);
+	});
+
+	it("finds no worker-realm value anywhere a workflow script can walk to", async () => {
+		const result = await runWorkflowScript({
+			...realmHost,
+			script: `
+				const seen = new Set();
+				const leaks = [];
+				function compilesStrings(value) {
+					for (const getFunction of [() => value.constructor.constructor, () => Object.getPrototypeOf(value).constructor.constructor]) {
+						let candidate;
+						try { candidate = getFunction(); } catch { continue; }
+						if (typeof candidate !== "function") continue;
+						try { candidate("return 1")(); return true; } catch {}
+					}
+					return false;
+				}
+				function sweep(path, value, depth) {
+					if (value === null || (typeof value !== "object" && typeof value !== "function") || seen.has(value)) return;
+					seen.add(value);
+					if (compilesStrings(value)) leaks.push(path);
+					if (depth === 0) return;
+					try { sweep(path + ".[[Prototype]]", Object.getPrototypeOf(value), depth - 1); } catch {}
+					let keys = [];
+					try { keys = Reflect.ownKeys(value); } catch {}
+					for (const key of keys) {
+						let descriptor;
+						try { descriptor = Object.getOwnPropertyDescriptor(value, key); } catch { continue; }
+						if (!descriptor) continue;
+						const name = path + "." + String(key);
+						sweep(name, descriptor.value, depth - 1);
+						sweep(name + "[get]", descriptor.get, depth - 1);
+						sweep(name + "[set]", descriptor.set, depth - 1);
+					}
+				}
+				const callers = [];
+				const callSites = [];
+				function probeFrames(callback) { callers.push(callback.caller); void new Error("probe").stack; }
+				Error.prepareStackTrace = (error, sites) => { for (const site of sites) callSites.push(site, site.getFunction(), site.getThis()); return "trace"; };
+				const values = {};
+				const launched = runs.run("child", { agent: "worker", task: "t" });
+				values.launched = launched;
+				values.chained = [launched.then(function onValue(value) { probeFrames(onValue); return value; }), launched.catch(() => undefined), launched.finally(() => undefined)];
+				values.child = await launched;
+				values.all = await runs.all([{ key: "all", agent: "worker", task: "t" }]);
+				values.lanes = await runs.lanes([{ key: "lane", stages: [{ key: "first", agent: "worker", task: "t" }] }]);
+				values.proxied = await runs.run("proxied", new Proxy({ agent: "worker", task: "t" }, { ownKeys: function ownKeys(target) { probeFrames(ownKeys); return Reflect.ownKeys(target); } }));
+				values.status = await runs.status("child");
+				values.steer = await runs.steer("child", "guide");
+				values.host = await runs.host("check", { kind: "command", command: "true", timeoutMs: 1000 });
+				values.state = [await state.get("saved"), await state.set("saved", { a: 1 })];
+				values.failed = await runs.run("fails", { agent: "worker", task: "t" }).then(() => undefined, (error) => error);
+				values.missing = await runs.status("missing").then(() => undefined, (error) => error);
+				values.combinators = [Promise.resolve(1), Promise.all([launched]), Promise.allSettled([1]), Promise.race([1]), Promise.any([1]), Promise.withResolvers ? Promise.withResolvers() : null];
+				values.constructed = new Promise(function executor(resolve, reject) { probeFrames(executor); values.executorArgs = [resolve, reject]; resolve(1); });
+				await Promise.resolve({ then(resolve, reject) { values.thenableArgs = [resolve, reject]; resolve(1); } });
+				values.native = WebAssembly.compile(new Uint8Array(0));
+				values.nativeError = await values.native.then(() => undefined, (error) => error);
+				console.log(new Error("stack first read by console"));
+				values.thrown = [
+					() => runs.run(1), () => runs.all(1), () => runs.lanes(1), () => runs.ref(null), () => runs.refs(1), () => runs.host("bad key"),
+					() => runs.steer("bad key", "m"), () => state.get(1), () => state.set("k", () => 1), () => emit(() => 1), () => Promise(), () => values.all.missing,
+				].map((call) => { try { return call(); } catch (error) { return error; } });
+				const RuntimeError = values.thrown[0].constructor;
+				RuntimeError.prepareStackTrace = Error.prepareStackTrace;
+				try { runs.run(2); } catch (error) { void error.stack; }
+				RuntimeError.prepareStackTrace = undefined;
+				Error.prepareStackTrace = undefined;
+				values.callers = callers;
+				values.callSites = callSites;
+				sweep("globalThis", globalThis, 3);
+				sweep("values", values, 4);
+				return { leaks, swept: seen.size, callers: callers.length, callSites: callSites.length };
+			`,
+		});
+		const value = result.value as { leaks: string[]; swept: number; callers: number; callSites: number };
+		assert.deepEqual(value.leaks, []);
+		assert.ok(value.swept > 500, `sweep reached only ${value.swept} values`);
+		assert.ok(value.callers >= 3 && value.callSites > 0, "callbacks the runtime invokes must have been probed");
+	});
+
+	it("rejects import() before the script runs", async () => {
+		for (const script of [`await import("node:fs");`, `return 1;\n})();\nimport("node:fs").catch(() => undefined);\n(() => {`]) {
+			await assert.rejects(
+				runWorkflowScript({ script, ...realmHost }),
+				(error: unknown) => error instanceof WorkflowScriptError && /cannot load modules with import\(\)/.test(error.message),
+			);
+		}
+	});
+
 	it("uses ordinary statement-body return semantics", async () => {
 		const implicit = await runWorkflowScript({
 			script: `({ answer: 42 });`,
