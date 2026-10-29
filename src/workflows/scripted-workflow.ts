@@ -1,7 +1,7 @@
 import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve as resolvePath } from "node:path";
-import { Worker } from "node:worker_threads";
+import { createWorkflowScriptWorker } from "./workflow-script-worker.ts";
 import { DEFAULT_GLOBAL_CONCURRENCY_LIMIT, Semaphore } from "../runs/shared/parallel-utils.ts";
 import { HOST_STEP_MAX_COUNT } from "../runs/shared/host-step-status.ts";
 import { describeGateAcceptanceConflict, parseGateInput } from "../runs/shared/acceptance.ts";
@@ -42,9 +42,6 @@ export interface WorkflowScriptValidationOptions {
 	/** Returns why launch-time resolution would reject this literal child agent name. */
 	agentNameError?: (name: string) => string | undefined;
 }
-
-const WORKFLOW_WORKER_URL = new URL("../../workflow-script-worker.cjs", import.meta.url);
-let nodeWorkerSource: string | undefined;
 
 export interface WorkflowScriptChildResult {
 	key: string;
@@ -1085,15 +1082,9 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 	} catch (error) {
 		throw new WorkflowScriptError("Workflow parser dependency 'acorn' is unavailable from pi-subagents. Reinstall pi-subagents dependencies before launching workflowScript.", emptyPartial(), "runtime", { cause: error });
 	}
-	let worker: Worker;
+	let worker: ReturnType<typeof createWorkflowScriptWorker>;
 	try {
-		const bun = typeof process.versions.bun === "string";
-		// Bun needs a real file as its resolver base on warm transpiler-cache hits, and no eval key at all: with one,
-		// its Worker finalizer passes the URL to URL.revokeObjectURL and throws. Node keeps eval source because its
-		// eval worker does not re-resolve inherited --import preloads after a cwd change.
-		worker = bun
-			? new Worker(WORKFLOW_WORKER_URL, { workerData: { acornPath } })
-			: new Worker(nodeWorkerSource ??= readFileSync(WORKFLOW_WORKER_URL, "utf8"), { eval: true, workerData: { acornPath } });
+		worker = createWorkflowScriptWorker(acornPath);
 	} catch (error) {
 		throw new WorkflowScriptError(`Workflow worker could not start: ${error instanceof Error ? error.message : String(error)}`, emptyPartial(), "runtime", { cause: error });
 	}
@@ -1295,7 +1286,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 
 		worker.on("error", (error) => finish({ error: taggedWorkflowError(`Workflow worker failed: ${error instanceof Error ? error.message : String(error)}`, "runtime") }));
 		worker.on("exit", (code) => {
-			if (!settled && code !== 0) finish({ error: taggedWorkflowError(`Workflow worker exited with code ${code}.`, "runtime") });
+			if (!settled && !finishing) finish({ error: taggedWorkflowError(`Workflow worker exited before returning a result (code ${code}).`, "runtime") });
 		});
 		worker.on("message", (message: Record<string, unknown>) => {
 			if (settled) return;

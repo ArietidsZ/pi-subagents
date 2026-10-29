@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { Worker } from "node:worker_threads";
+import { WorkflowScriptProcess } from "../../src/workflows/workflow-script-worker.ts";
 import { formatChildToolDiagnostic } from "../../src/runs/shared/tool-availability.ts";
 import { formatWorkflowJsonPreview, previewSimpleWorkflowRun, runWorkflowScript, validateWorkflowScript, WorkflowScriptError, type WorkflowScriptChildResult } from "../../src/workflows/scripted-workflow.ts";
 import { workflowChildSummary } from "../../src/workflows/workflow-child-summary.ts";
@@ -2613,7 +2614,8 @@ describe("scripted workflow runtime", () => {
 		let childAborted = false;
 		await assert.rejects(
 			runWorkflowScript({
-				script: `runs.run("bg", { agent: "worker", task: "fire and forget" }); return "done";`,
+				// The status round trip ensures the host has started the launch; a launch still queued at completion is never started.
+				script: `runs.run("bg", { agent: "worker", task: "fire and forget" }); await runs.status("probe"); return "done";`,
 				timeoutMs: 2_000,
 				launch(_key, _params, signal) {
 					return new Promise((_resolve, reject) => signal.addEventListener("abort", () => {
@@ -3289,14 +3291,15 @@ describe("scripted workflow runtime", () => {
 	});
 
 	it("ignores a queued child launch message after workflow abort", async () => {
-		const originalOn = Worker.prototype.on;
+		const workerPrototype = (process.versions.bun ? Worker.prototype : WorkflowScriptProcess.prototype) as unknown as { on: typeof Worker.prototype.on };
+		const originalOn = workerPrototype.on;
 		const controller = new AbortController();
 		let launchCount = 0;
 		let deliverCapturedRunMessage: (() => void) | undefined;
 		let markRunMessageCaptured!: () => void;
 		const runMessageCaptured = new Promise<void>((resolve) => { markRunMessageCaptured = resolve; });
 
-		(Worker.prototype as unknown as { on: typeof Worker.prototype.on }).on = function (event: string | symbol, listener: (...args: unknown[]) => void) {
+		workerPrototype.on = function (event: string | symbol, listener: (...args: unknown[]) => void) {
 			if (event !== "message") return originalOn.call(this, event, listener);
 			const wrapped = (message: Record<string, unknown>) => {
 				if (message.type === "call" && message.method === "run") {
@@ -3327,7 +3330,7 @@ describe("scripted workflow runtime", () => {
 			await new Promise((resolve) => queueMicrotask(resolve));
 			assert.equal(launchCount, 0);
 		} finally {
-			Worker.prototype.on = originalOn;
+			workerPrototype.on = originalOn;
 		}
 	});
 
@@ -3433,7 +3436,7 @@ describe("scripted workflow runtime", () => {
 	});
 
 	it("drops a child response that settles after the workflow aborts", async () => {
-		const workerPrototype = Worker.prototype as unknown as { postMessage(value: unknown, ...args: unknown[]): void };
+		const workerPrototype = (process.versions.bun ? Worker.prototype : WorkflowScriptProcess.prototype) as unknown as { postMessage(value: unknown, ...args: unknown[]): void };
 		const originalPostMessage = workerPrototype.postMessage;
 		const controller = new AbortController();
 		let workflowSettled = false;
@@ -3788,7 +3791,7 @@ describe("scripted workflow runtime", () => {
 			const result = await nextChildMessage(child);
 			assert.equal(result.ok, true, String(result.error ?? stderr));
 			assert.equal(result.chdirCalls, 0, "healthy launch must never invoke process.chdir");
-			assert.deepEqual(result.workerInitCwds, [expectedCallerCwd], "Worker init hooks must only observe the caller cwd");
+			assert.deepEqual(result.workerInitCwds, [expectedCallerCwd], "Workflow executor init hooks must only observe the caller cwd");
 		} finally {
 			await stopChild(child);
 			fs.rmSync(root, { recursive: true, force: true });

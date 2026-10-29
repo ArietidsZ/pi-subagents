@@ -12,7 +12,7 @@ process.chdir = ((directory: string) => {
 }) as typeof process.chdir;
 createHook({
   init(_asyncId, type) {
-    if (type === "WORKER") workerInitCwds.push(process.cwd());
+    if (type === "WORKER" || type === "PROCESSWRAP") workerInitCwds.push(process.cwd());
   },
 }).enable();
 
