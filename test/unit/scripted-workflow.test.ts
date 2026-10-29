@@ -114,6 +114,12 @@ describe("scripted workflow runtime", () => {
 				console.log(new Error("stack first read by console"));
 				void new Error("script stack").stack;
 				try { runs.run(2); } catch (error) { void error.stack; }
+				const replacedErrorSites = [];
+				const OriginalError = Error;
+				globalThis.Error = function ReplacedError() {};
+				globalThis.Error.prepareStackTrace = (error, sites) => { replacedErrorSites.push(...sites); return "trace"; };
+				void new OriginalError("stack read with a replaced Error").stack;
+				globalThis.Error = OriginalError;
 				const routes = {
 					globalThis, runs, emit, "console.log": console.log, "state.get": state.get,
 					...Object.fromEntries(Object.keys(runs).map((name) => ["runs." + name, runs[name]])),
@@ -127,6 +133,7 @@ describe("scripted workflow runtime", () => {
 					...Object.fromEntries(Object.entries(routes).map(([name, value]) => [name, realmOf(value)])),
 					"custom inspector": customInspectorArgs ? customInspectorArgs.map(realmOf).join("/") : "not called",
 					"stack trace hook": callSiteValues.length === 0 ? "locked" : callSiteValues.filter(Boolean).every((value) => realmOf(value) === "EvalError") ? "EvalError" : "worker",
+					"replaced Error stack hook": replacedErrorSites.flatMap((site) => [site, site.getFunction(), site.getThis()]).filter(Boolean).every((value) => realmOf(value) === "EvalError") ? "EvalError" : "worker",
 				};
 			`,
 		});
@@ -170,6 +177,7 @@ describe("scripted workflow runtime", () => {
 						sweep(name, descriptor.value, depth - 1);
 						sweep(name + "[get]", descriptor.get, depth - 1);
 						sweep(name + "[set]", descriptor.set, depth - 1);
+						sweep(name + "[descriptor]", descriptor, depth - 1);
 					}
 				}
 				const callers = [];
@@ -218,6 +226,95 @@ describe("scripted workflow runtime", () => {
 		assert.ok(value.callers >= 3, "callbacks the runtime invokes must have been probed");
 		assert.equal(value.callSites, 0, "Error.prepareStackTrace must stay locked in both realms");
 		assert.equal(value.visibleCallers, 0, "a script callback's .caller must not expose the runtime function that invoked it");
+	});
+
+	// Engine and host internals can raise errors created outside the script realm. Whatever realm such an
+	// error comes from, the workflow runtime contract is the same: nothing reached from it compiles code.
+	const compileOutcome = `
+		function compileOutcome(getFunction) {
+			try { return getFunction()("return 1")() === 1 ? "compiled" : "blocked"; } catch { return "blocked"; }
+		}
+	`;
+
+	it("keeps a redefined locked global in the script realm", async () => {
+		const result = await runWorkflowScript({
+			...realmHost,
+			script: `${compileOutcome}
+				Object.defineProperty(globalThis, "locked", { value: 1, writable: false, configurable: false });
+				try {
+					Object.defineProperty(globalThis, "locked", { value: 2 });
+					return "no error";
+				} catch (error) {
+					return compileOutcome(() => error.constructor.constructor);
+				}
+			`,
+		});
+		assert.equal(result.value, "blocked");
+	});
+
+	it("keeps stack-limit errors in the script realm", async () => {
+		const result = await runWorkflowScript({
+			...realmHost,
+			script: `${compileOutcome}
+				const outcomes = [];
+				function recurse(atLimit) {
+					try { recurse(atLimit); } catch (overflow) {
+						if (outcomes.length < 50) {
+							try { atLimit(); } catch (error) { outcomes.push(compileOutcome(() => error.constructor.constructor)); }
+						}
+						throw overflow;
+					}
+				}
+				for (const atLimit of [() => void new Error("read near the limit").stack, () => new Promise((resolve) => resolve(1)).then((value) => value)]) {
+					try { recurse(atLimit); } catch {}
+				}
+				return { caught: outcomes.length, compiled: outcomes.filter((outcome) => outcome === "compiled").length };
+			`,
+		});
+		const value = result.value as { caught: number; compiled: number };
+		assert.ok(value.caught > 0, "reading a stack near the limit must have thrown at least once");
+		assert.equal(value.compiled, 0);
+	});
+
+	it("worker built-in constructors cannot compile code", async () => {
+		const result = await runWorkflowScript({
+			...realmHost,
+			script: `${compileOutcome}
+				const errors = [];
+				Object.defineProperty(globalThis, "locked", { value: 1, writable: false, configurable: false });
+				try { Object.defineProperty(globalThis, "locked", { value: 2 }); } catch (error) { errors.push(error); }
+				function recurse() {
+					try { recurse(); } catch (overflow) {
+						if (errors.length < 20) { try { void new Error("read near the limit").stack; } catch (error) { errors.push(error); } }
+						throw overflow;
+					}
+				}
+				try { recurse(); } catch {}
+				const sites = [];
+				const outcomes = errors.map((error) => {
+					const ErrorConstructor = error.constructor;
+					const BaseError = Object.getPrototypeOf(ErrorConstructor);
+					for (const target of [ErrorConstructor, BaseError]) {
+						try { target.prepareStackTrace = (thrown, callSites) => { sites.push(...callSites); return "trace"; }; } catch {}
+					}
+					try { void new ErrorConstructor("formatted").stack; } catch {}
+					return [
+						compileOutcome(() => ErrorConstructor.constructor),
+						compileOutcome(() => BaseError.constructor),
+						compileOutcome(() => Object.getPrototypeOf(BaseError).constructor),
+					];
+				});
+				return {
+					errors: errors.length,
+					compiled: outcomes.flat().filter((outcome) => outcome === "compiled").length,
+					frameFunctions: sites.flatMap((site) => [site, site.getFunction(), site.getThis()]).filter(Boolean).filter((value) => compileOutcome(() => value.constructor.constructor) === "compiled").length,
+				};
+			`,
+		});
+		const value = result.value as { errors: number; compiled: number; frameFunctions: number };
+		assert.ok(value.errors > 0, "the script must have caught an engine-raised error");
+		assert.equal(value.compiled, 0);
+		assert.equal(value.frameFunctions, 0);
 	});
 
 	it("rejects import() before the script runs", async () => {
