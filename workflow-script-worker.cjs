@@ -25,8 +25,9 @@ function createWorkflowPromiseHook(callbacks) {
 // context (the runtime realm), compiled from this function's source. Neither realm can compile code
 // from strings, and no worker-realm object may ever become reachable from either: one would hand the
 // script the worker's Function, and with it process. The runtime talks to the worker only through
-// `bridge`, which it keeps in this closure, passes only strings and numbers, and calls in try/catch so
-// a worker-realm exception (even a stack overflow) never reaches script code.
+// `bridge`, which it keeps in this closure, passes only strings and numbers, and calls in try/catch.
+// Engine paths can still throw a worker-realm error into script code (a stack overflow inside Node's
+// stack formatter, for one), so lockWorkerRealm also makes every worker value useless before a script runs.
 function workflowRuntime(bridge, scriptRealm, stateEnabled) {
 "use strict";
 
@@ -117,7 +118,13 @@ function canonicalRunParams(params) {
 }
 
 function isDirectWorkflowScriptPromiseHandlerCall() {
-  const stack = new Error().stack;
+  let stack;
+  try {
+    stack = new Error().stack;
+  } catch {
+    // Near the stack limit the host's formatter overflows and throws its own realm's RangeError.
+    return false;
+  }
   if (typeof stack !== "string") return false;
   return stack.split("\n").some((line) => line.includes("workflow-script.js") && !line.includes("at async "));
 }
@@ -1174,6 +1181,37 @@ const WORKFLOW_RUNTIME_SOURCE = [
 
 const VM_CONTEXT_OPTIONS = { codeGeneration: { strings: false, wasm: false } };
 const LOCK_PREPARE_STACK_TRACE_SOURCE = "Object.defineProperty(Error, \"prepareStackTrace\", { value: undefined, writable: false, enumerable: false, configurable: false });";
+
+// A null-prototype sandbox keeps globalThis.constructor out of the worker realm. The sandbox itself is
+// still a worker-realm object, and Bun forwards a failed global redefinition to it as the worker's
+// TypeError; lockWorkerRealm makes that error useless. vm.constants.DONT_CONTEXTIFY would avoid the
+// sandbox, but Bun 1.3 ignores properties defined on such a global, so the script API could not be installed.
+function createVmRealm() {
+  return vm.createContext(Object.create(null), VM_CONTEXT_OPTIONS);
+}
+
+// Runs once the worker has compiled everything it needs, right before the script starts. A worker-realm
+// value can still reach a script through engine paths (see workflowRuntime), so take away what such a
+// value would be used for: no worker function's constructor compiles code, and no script can install a
+// stack formatter that hands it worker frames.
+function lockWorkerRealm() {
+  const refuse = function Function() {
+    throw new TypeError("Code generation is disabled in the workflow worker.");
+  };
+  const functionPrototypes = [
+    Function.prototype,
+    Object.getPrototypeOf(async function () {}),
+    Object.getPrototypeOf(function* () {}),
+    Object.getPrototypeOf(async function* () {}),
+  ];
+  // A host that froze these already chose their values; redefining them would throw and fail every workflow.
+  const lock = (target, key, value) => {
+    if (Object.getOwnPropertyDescriptor(target, key)?.configurable === false) return;
+    Object.defineProperty(target, key, { value, writable: false, enumerable: false, configurable: false });
+  };
+  for (const prototype of functionPrototypes) lock(prototype, "constructor", refuse);
+  lock(Error, "prepareStackTrace", Error.prepareStackTrace);
+}
 const INSPECT_OPTIONS = { depth: 4, breakLength: 120, customInspect: false };
 
 let runtime;
@@ -1244,21 +1282,18 @@ function deepFreezeWorkflowArgs(value) {
 }
 
 function startWorkflow(message) {
-  const sandbox = Object.create(null);
-  // A null-prototype sandbox: the context resolves globals it lacks, such as globalThis.constructor,
-  // through the sandbox's prototype chain, which for an object literal is the worker's Object.prototype.
-  const context = vm.createContext(sandbox, VM_CONTEXT_OPTIONS);
-  const runtimeContext = vm.createContext(Object.create(null), VM_CONTEXT_OPTIONS);
+  const context = createVmRealm();
+  const runtimeContext = createVmRealm();
   // Bun hands Error.prepareStackTrace call sites (and the array holding them) from the worker's realm,
   // whatever context the error came from. Lock it in both realms before any code runs there.
   for (const realm of [context, runtimeContext]) vm.runInContext(LOCK_PREPARE_STACK_TRACE_SOURCE, realm);
   const scriptRealm = vm.runInContext("({ __proto__: null, objectPrototype: Object.prototype, promisePrototype: (async () => {})().constructor.prototype })", context);
   const createRuntime = new vm.Script(WORKFLOW_RUNTIME_SOURCE, { filename: "pi-workflow-runtime.js" }).runInContext(runtimeContext);
   runtime = createRuntime(bridge, scriptRealm, Boolean(message.stateEnabled));
-  Object.assign(sandbox, runtime.scriptGlobals);
+  Object.assign(context, runtime.scriptGlobals);
   // Rebuild args inside the VM realm: a worker-realm object would expose the worker's unrestricted
   // Function through args.constructor.constructor, bypassing codeGeneration.strings: false.
-  sandbox.args = deepFreezeWorkflowArgs(vm.runInContext("JSON.parse", context)(JSON.stringify(message.args ?? {})));
+  context.args = deepFreezeWorkflowArgs(vm.runInContext("JSON.parse", context)(JSON.stringify(message.args ?? {})));
   let compiled;
   try {
     assertPortableWorkflowScript(message.script);
@@ -1269,6 +1304,7 @@ function startWorkflow(message) {
   }
   if (!runtime.beginWorkflowScript()) return;
   stopWorkflowPromiseHook = createWorkflowPromiseHook({ init: runtime.hookInit, before: runtime.hookBefore, after: runtime.hookAfter });
+  lockWorkerRealm();
   let result;
   let threw = false;
   try {
