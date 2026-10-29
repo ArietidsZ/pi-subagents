@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Security
+
+- Workflow scripts could reach the Pi process outside their sandbox. Upgrade to this version; see [GHSA-6v8j-6w28-2w8r](https://github.com/nicobailon/pi-subagents/security/advisories/GHSA-6v8j-6w28-2w8r) for affected versions and a workaround. Workflow scripts can no longer set `Error.prepareStackTrace`, and a script that calls `import()`, which always failed inside a workflow, is now rejected before it runs.
+
 ### Fixed
 
 - Old background runs are now deleted from disk. Background runs are meant to be removed 30 days after they finish, but a run was kept forever while its Pi session file still existed, and session files are never deleted, so almost no run was ever removed. A run whose session still exists is now kept for 90 days, so you can still resume it for that long, and is then removed like any other finished run. Thanks to [@LCorleone](https://github.com/LCorleone) for the report and fix, and [@isjiajia01](https://github.com/isjiajia01) for reproducing it. (#3098)
