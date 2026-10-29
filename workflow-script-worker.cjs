@@ -1173,6 +1173,7 @@ const WORKFLOW_RUNTIME_SOURCE = [
 ].join("\n");
 
 const VM_CONTEXT_OPTIONS = { codeGeneration: { strings: false, wasm: false } };
+const LOCK_PREPARE_STACK_TRACE_SOURCE = "Object.defineProperty(Error, \"prepareStackTrace\", { value: undefined, writable: false, enumerable: false, configurable: false });";
 const INSPECT_OPTIONS = { depth: 4, breakLength: 120, customInspect: false };
 
 let runtime;
@@ -1247,8 +1248,12 @@ function startWorkflow(message) {
   // A null-prototype sandbox: the context resolves globals it lacks, such as globalThis.constructor,
   // through the sandbox's prototype chain, which for an object literal is the worker's Object.prototype.
   const context = vm.createContext(sandbox, VM_CONTEXT_OPTIONS);
+  const runtimeContext = vm.createContext(Object.create(null), VM_CONTEXT_OPTIONS);
+  // Bun hands Error.prepareStackTrace call sites (and the array holding them) from the worker's realm,
+  // whatever context the error came from. Lock it in both realms before any code runs there.
+  for (const realm of [context, runtimeContext]) vm.runInContext(LOCK_PREPARE_STACK_TRACE_SOURCE, realm);
   const scriptRealm = vm.runInContext("({ __proto__: null, objectPrototype: Object.prototype, promisePrototype: (async () => {})().constructor.prototype })", context);
-  const createRuntime = new vm.Script(WORKFLOW_RUNTIME_SOURCE, { filename: "pi-workflow-runtime.js" }).runInContext(vm.createContext(Object.create(null), VM_CONTEXT_OPTIONS));
+  const createRuntime = new vm.Script(WORKFLOW_RUNTIME_SOURCE, { filename: "pi-workflow-runtime.js" }).runInContext(runtimeContext);
   runtime = createRuntime(bridge, scriptRealm, Boolean(message.stateEnabled));
   Object.assign(sandbox, runtime.scriptGlobals);
   // Rebuild args inside the VM realm: a worker-realm object would expose the worker's unrestricted

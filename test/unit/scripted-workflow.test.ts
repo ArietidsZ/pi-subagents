@@ -109,9 +109,11 @@ describe("scripted workflow runtime", () => {
 				let customInspectorArgs;
 				console.log({ [Symbol.for("nodejs.util.inspect.custom")](depth, options, inspect) { customInspectorArgs = [options, inspect]; return "custom"; } });
 				const callSiteValues = [];
-				Error.prepareStackTrace = (error, sites) => { for (const site of sites) callSiteValues.push(site, site.getFunction(), site.getThis()); return "trace"; };
+				const captureSites = (error, sites) => { for (const site of sites) callSiteValues.push(site, site.getFunction(), site.getThis()); return "trace"; };
+				for (const ErrorClass of [Error, thrown.constructor]) { try { ErrorClass.prepareStackTrace = captureSites; } catch {} }
 				console.log(new Error("stack first read by console"));
-				Error.prepareStackTrace = undefined;
+				void new Error("script stack").stack;
+				try { runs.run(2); } catch (error) { void error.stack; }
 				const routes = {
 					globalThis, runs, emit, "console.log": console.log, "state.get": state.get,
 					...Object.fromEntries(Object.keys(runs).map((name) => ["runs." + name, runs[name]])),
@@ -124,14 +126,14 @@ describe("scripted workflow runtime", () => {
 				return {
 					...Object.fromEntries(Object.entries(routes).map(([name, value]) => [name, realmOf(value)])),
 					"custom inspector": customInspectorArgs ? customInspectorArgs.map(realmOf).join("/") : "not called",
-					"console call sites": callSiteValues.length === 0 ? "not called" : callSiteValues.filter(Boolean).every((value) => realmOf(value) === "EvalError") ? "EvalError" : "worker",
+					"stack trace hook": callSiteValues.length === 0 ? "locked" : callSiteValues.filter(Boolean).every((value) => realmOf(value) === "EvalError") ? "EvalError" : "worker",
 				};
 			`,
 		});
 		const value = result.value as Record<string, string>;
 		assert.deepEqual(
 			Object.entries(value).filter(([, realm]) => realm !== "EvalError"),
-			[["custom inspector", "not called"]],
+			[["custom inspector", "not called"], ["stack trace hook", "locked"]],
 			"every value must come from a realm whose Function cannot compile strings",
 		);
 		assert.ok(Object.keys(value).length > 25);
@@ -213,7 +215,8 @@ describe("scripted workflow runtime", () => {
 		const value = result.value as { leaks: string[]; swept: number; callers: number; visibleCallers: number; callSites: number };
 		assert.deepEqual(value.leaks, []);
 		assert.ok(value.swept > 500, `sweep reached only ${value.swept} values`);
-		assert.ok(value.callers >= 3 && value.callSites > 0, "callbacks the runtime invokes must have been probed");
+		assert.ok(value.callers >= 3, "callbacks the runtime invokes must have been probed");
+		assert.equal(value.callSites, 0, "Error.prepareStackTrace must stay locked in both realms");
 		assert.equal(value.visibleCallers, 0, "a script callback's .caller must not expose the runtime function that invoked it");
 	});
 
