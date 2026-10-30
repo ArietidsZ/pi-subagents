@@ -1057,6 +1057,14 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		cleanup(shutdownReason) {
 			if (runtimeCleaned) return;
 			runtimeCleaned = true;
+			++advertisementGeneration;
+			advertisementLookup?.abort();
+			advertisementLookup = undefined;
+			advertisedContext = undefined;
+			globalRoot = null;
+			advertisedAgents = [];
+			advertisementReady = Promise.resolve();
+			notifySessionChange();
 			// Synchronously, so a reload's new runtime finds these runs unclaimed when it scans.
 			cancelPendingWorkflowAutoResumes((entry) => entry.owner === autoResumeOwner);
 			programStatus.dispose(shutdownReason);
@@ -1252,14 +1260,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (event) => {
-		++advertisementGeneration;
-		advertisementLookup?.abort();
-		advertisementLookup = undefined;
-		advertisedContext = undefined;
-		globalRoot = null;
-		advertisedAgents = [];
-		advertisementReady = Promise.resolve();
-		notifySessionChange();
 		cancelCompactionResume();
 		completionNotifier.sessionShutdown(event?.reason);
 		parentWake.sessionShutdown(event?.reason);
