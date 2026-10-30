@@ -43,7 +43,14 @@ export interface McpDirectToolGrant {
 }
 
 export function normalizeMcpDirectToolSelectors(selectors: readonly string[] | undefined): string[] {
-	return [...new Set((selectors ?? []).map((selector) => selector.replace(/\/+$/, "")).filter(Boolean))];
+	return [...new Set((selectors ?? []).map(trimTrailingSlashes).filter(Boolean))];
+}
+
+/** A `/+$/` replace rescans the selector from every index when the string ends in anything else. */
+function trimTrailingSlashes(selector: string): string {
+	let end = selector.length;
+	while (end > 0 && selector[end - 1] === "/") end -= 1;
+	return selector.slice(0, end);
 }
 
 export function parseMcpDirectToolSelectors(selectors: readonly string[]): {
