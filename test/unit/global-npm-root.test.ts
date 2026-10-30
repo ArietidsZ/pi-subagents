@@ -125,21 +125,34 @@ describe("resolveGlobalNpmRoot", () => {
 		if (process.platform === "win32") return; // npm.cmd descendants are outside this ownership assertion.
 		const { dir, env } = fixture("exit 1");
 		const pidFile = path.join(dir, "npm.pid");
-		fs.writeFileSync(path.join(dir, "bin", "npm"), `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 30\n`, { mode: 0o755 });
+		// Shell redirection exposes an empty receipt before echo writes the PID.
+		fs.writeFileSync(path.join(dir, "bin", "npm"), `#!/bin/sh\n: > '${pidFile}'\nsleep 0.05\necho $$ > '${pidFile}'\nexec sleep 30\n`, { mode: 0o755 });
 		const controller = new AbortController();
 		const lookup = resolveGlobalNpmRoot({ env, timeoutMs: 5000, signal: controller.signal });
 		try {
 			const deadline = Date.now() + 3000;
-			while (!fs.existsSync(pidFile) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
-			assert.equal(fs.existsSync(pidFile), true);
-			const pid = Number(fs.readFileSync(pidFile, "utf8"));
+			let pid: number | undefined;
+			while (Date.now() < deadline) {
+				try {
+					const receipt = fs.readFileSync(pidFile, "utf8");
+					const candidate = Number(receipt);
+					if (/^[1-9]\d*\n$/.test(receipt) && Number.isSafeInteger(candidate) && candidate > 1) {
+						pid = candidate;
+						break;
+					}
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				}
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			assert.ok(pid !== undefined, "owned npm must publish a complete positive PID");
 			controller.abort();
 			assert.equal(await lookup, null);
 			for (let waited = 0; waited < 3000; waited += 20) {
 				try { process.kill(pid, 0); } catch { break; }
 				await new Promise(resolve => setTimeout(resolve, 20));
 			}
-			assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+			assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, `cancelled owned npm ${pid} must exit`);
 			assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 		} finally { controller.abort(); await lookup; }
 	});
