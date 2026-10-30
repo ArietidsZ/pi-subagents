@@ -1771,6 +1771,13 @@ describe("scripted workflow runtime", () => {
 			["reviewer", "Read-only review. Do not edit files. /usr/bin/rm -rf ."],
 			["reviewer", "Read-only review. Do not edit files. /usr/local/bin/rm -rf ."],
 			["reviewer", "Read-only review. Do not edit files. Validation after fix: git -C . reset --hard."],
+			["reviewer", "Read-only review. Do not edit files. git -C -1 reset --hard"],
+			["reviewer", "Read-only review. Do not edit files. git --work-tree='dir with spaces' reset --hard"],
+			["reviewer", 'Read-only review. Do not edit files. git --work-tree="dir with spaces" reset --hard'],
+			["reviewer", 'Read-only review. Do not edit files. git -C "x -a reset"'],
+			["reviewer", "Read-only review. Do not edit files. git -C 'git reset' status"],
+			["reviewer", 'Read-only review. Do not edit files. git -c "x reset"'],
+			["reviewer", "Read-only review. Do not edit files. git -C --hard reset"],
 			["reviewer", "Read-only review. Do not edit files. git --work-tree . reset --hard."],
 			["reviewer", "Read-only review. Do not edit files. git --work-tree \"/tmp/my repo\" reset --hard."],
 			["reviewer", "Read-only review. Do not edit files. git --work-tree '/tmp/my repo' reset --hard."],
@@ -1784,6 +1791,7 @@ describe("scripted workflow runtime", () => {
 			["reviewer", "Read-only review. Do not edit files. git stash."],
 			["reviewer", "Read-only review. Do not edit files. git revert abc123."],
 			["reviewer", "Read-only review. Do not edit files. Stage the changed files."],
+			["reviewer", "Read-only review. Do not edit files. git --no-pager commit -m fix."],
 			["reviewer", "Read-only review. Do not edit files. git reset --hard"],
 			["reviewer", "Read-only review. Do not edit files. git restore src/workflows/scripted-workflow.ts"],
 		]) {
@@ -1814,6 +1822,55 @@ describe("scripted workflow runtime", () => {
 				(error: unknown) => error instanceof WorkflowScriptError && /only explicit read-only review children with acceptance:false may follow/.test(error.message),
 			);
 			assert.deepEqual(launches, ["writer"]);
+		}
+	});
+
+	it("keeps non-matching git syntax allowed and scans adversarial option streams in bounded time", async () => {
+		const recovery = {
+			status: "available-for-review" as const,
+			reason: "acceptance-metadata-rejected" as const,
+			reportPath: "/tmp/writer-report.md",
+			reportHash: "a".repeat(64),
+		};
+		// The upstream pattern does not match -C=x: short options only take separated values.
+		// The long streams are 198,003 and 175,000 characters: exponential and repeated-start
+		// regressions respectively. The elapsed-time assertion includes the workflow process.
+		for (const optionStream of ["git -C=x reset", `git${" -a".repeat(66_000)}`, "git -a ".repeat(25_000)]) {
+			const launches: string[] = [];
+			const startedAt = performance.now();
+			const result = await runWorkflowScript({
+				script: `
+					const writer = await runs.run("writer", { agent: "worker", task: "write" });
+					const review = await runs.run("review", { agent: "reviewer", task: ${JSON.stringify(`Read-only review. Do not edit files. ${optionStream}`)}, acceptance: false });
+					return review.ok;
+				`,
+				launch(key) {
+					launches.push(key);
+					if (key === "writer") {
+						return Promise.resolve({
+							key,
+							ok: false,
+							output: "saved writer report",
+							error: "Acceptance rejected: malformed acceptance-report",
+							runId: "writer-run",
+							outputReference: recovery.reportPath,
+							recovery,
+							artifactPaths: [recovery.reportPath],
+							results: [{ acceptance: { status: "rejected", recovery } }],
+						});
+					}
+					return Promise.resolve({ key, ok: true, output: "review complete", runId: "review-run", artifactPaths: [] });
+				},
+				async status(key) { return { key, ok: true, output: "ok", artifactPaths: [] }; },
+			});
+			const elapsedMs = performance.now() - startedAt;
+
+			assert.deepEqual(launches, ["writer", "review"]);
+			assert.equal(result.value, true);
+			assert.ok(
+				elapsedMs < 10_000,
+				`the read-only review scan took ${Math.round(elapsedMs)} ms on a ${optionStream.length}-character prompt`,
+			);
 		}
 	});
 

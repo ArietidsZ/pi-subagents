@@ -9,6 +9,7 @@
 ### Fixed
 
 - The `cost` RPC and `/subagent-cost` now include background runs that were started without a `subagent` tool call, such as RPC `spawn` launches and their workflow children. Before, these runs were left out of the child rows and totals. Thanks to [@BenedictP](https://github.com/BenedictP) for #3106.
+- The read-only review check scans a `git` command line in one pass. A task prompt holding a long run of `git` options made the old pattern backtrack exponentially and freeze the workflow, and a 198,000-character prompt that never finished now takes milliseconds. Thanks to @Yivas for #3110.
 
 ## [0.84.0] - 2026-10-28
 
