@@ -12,6 +12,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
+# Every job here reads the checkout and nothing else: no repository write, comment or release.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: test (${{ matrix.label }})
